@@ -222,6 +222,80 @@ Current state (see `trager_status.md` for the full breakdown):
 
 ---
 
+## Extending beyond simple radical extensions
+
+The full Trager algorithm handles arbitrary algebraic extensions `K(x)[y] / (F(x, y))` with `F` irreducible in `y` over `ℚ(x)`. This implementation fixes `F(x, y) = y^n − g(x)` and that shape is load-bearing in every phase except Phase 4. The rest of this section is a phase-by-phase account of what would need to be added or replaced.
+
+### Integral basis (`Basis.m`)
+
+The Trager basis `w_i = y^i / d_i` with `d_i = ∏_j p_j^⌊i·e_j / n⌋` is a closed form because `y^n − g` has discriminant `±n^n · g^(n-1)` and purely Kummer ramification. For general `F`:
+
+1. Compute `disc_y(F) ∈ ℚ[x]` and square-free factor it — these are the ramified primes.
+2. At each ramified prime, build a local maximal order via Round-2 / van Hoeij 1994 / Böhm, or Trager Ch 3 §§2–3 directly.
+3. Glue the local orders into a global integral basis by CRT.
+4. Emit the structure tensor `c_{i,j,k} ∈ ℚ[x]` with `w_i · w_j = Σ_k c_{i,j,k} · w_k`.
+
+The resulting basis is no longer diagonal under multiplication, which cascades through Phase 1 arithmetic and Phase 3 Hermite.
+
+### AF arithmetic (`Arithmetic.m`)
+
+- `afTimes` currently uses `w_i · w_j = (g^q · d_{(i+j) mod n})/(d_i · d_j) · w_{(i+j) mod n}` — a single basis element with a rational-function multiplier. The general case is the full sum `Σ_k c_{i,j,k} · w_k` against the structure tensor from the new integral basis.
+- `afD` uses `w_i' = (i · g'/(n · g) − d_i'/d_i) · w_i` — diagonal. General derivation: differentiate `F(x, y) = 0` to get `y' = −F_x / F_y`, differentiate each `w_i` in its `(x, y)`-polynomial representation, reduce modulo `F` and the basis relations. The result is a full matrix `D_{i,j}` with `w_i' = Σ_j D_{i,j} · w_j`.
+- `afNorm`, `afTrace`, `afInverse` port unchanged — they work on whatever multiplication matrix exists.
+
+### Genus (`Genus.m`)
+
+The current formula is Riemann–Hurwitz applied to a Kummer cover, in closed form. General curves need Puiseux expansions at each singularity (affine and at infinity) to read off branch indices, then adjunction: for a plane curve of bidegree `(n, m)`, `g = (n-1)(m-1)/2 − δ` with `δ` summed from local delta-invariants at the singular places.
+
+### Infinity shift (`Shift.m`)
+
+The `k = ⌈deg g / n⌉` scaling and single `y_new = y · z^k` correction assume a single-place, Kummer-ramified structure at infinity. For general `F`, infinity may split into several places with different ramification indices; the correct rescale is per-place and driven by Puiseux expansions at `x = ∞`, not a single `z^k`. The `a`-search loop is unaffected; the post-shift normalisation is not.
+
+### Hermite reduction (`Hermite.m`)
+
+The plan's general congruence is
+```
+A[i] ≡ −k · U · V' · B[i] + T · Σ_l B[l] · M[l, i]   (mod V)
+```
+with `M[k, i]` the derivation matrix (`E · w_k' = Σ_i M[k, i] · w_i`). For a simple radical, `M` is diagonal, the `Σ` collapses to `B[i] · M[i, i]`, and the per-component solve in the current `Hermite.m` works. For general `F`, the system is coupled across `i`: a linear solve in `(B[0], …, B[n-1])` over `ℚ[x] / (V)`. The underlying machinery (`PolynomialExtendedGCD` over residue rings) is already present; only the solver wrapper changes.
+
+### Residues (`Residues.m`) — ports unchanged
+
+`Resultant[Resultant[Z · B'_full − G_poly, y^n − g, y], p_i, x]` becomes `Resultant[Resultant[Z · B'_full − G_poly, F, y], p_i, x]`. The `B_full = B · d_{n-1}` denominator clearing becomes "multiply by the lcm of basis denominators for the new integral basis". The Z-basis / residue-span extraction is independent of the curve shape.
+
+### Place arithmetic (`PlaceOrder.m`, `Divisor.m`)
+
+`PlaceOrder.m` computes `ord_P(h)` using the Kummer branch structure (non-branch places: uniformizer `x − α`; branch places: the `n`-th root local uniformizer when `g(α) = 0`). The general case: Puiseux-expand `F` around each root `(α, β)` of `F(α, y) = 0`, read the branch index off the Newton polygon, and compute `ord_P` from the Puiseux coefficients of `h`. The `D2/D3` split in `residueDivisor` is generic; the "raise D3 to the n-th power" branch correction becomes per-place `e_P`.
+
+### Normalization at infinity (`Normalize.m`, `PrincipalGen.m`)
+
+`scaledInfOrder` hardcodes `infOrder(c · w_j) = n · deg(c) + j · deg(g) − n · deg(d_j)` — derived from the simple-radical basis. Generally, the per-column adjustment comes from the Puiseux expansions at `x = ∞`, not from `d_j`. The K[z]-HNF and null-vector machinery in `normalizeAtInfinity` are unchanged.
+
+### Log-part construction (`TragerLogTerms.m`, `MillerKauersLogTerms.m`, `KauersLogTerms.m`)
+
+- **Trager engine.** The multiplicity formula `k = ord_α(g(x) − g(α))` and the support-place contribution `(y − y_α) / (x − α)^(k-1)` bake in the simple-radical local structure. The general form uses the Puiseux uniformizer at `(α, y_α)` and the local expansion of `F` there.
+- **Miller engine.** `Id(F, v, u − z · v', r_i(z))` already takes `F` as a parameter; the port is largely mechanical once the integral basis is generalised.
+- **Kauers engine.** Heuristic; specific to the simple radical structure in its current form.
+
+### Orthogonal missing pieces
+
+Not specific to the "simple radical" restriction, but required for a production implementation:
+
+- **Radical compositums** (multiple distinct radicals in one integrand). Reduce to a single extension via primitive-element construction before entering the pipeline. Trager Appendix A.
+- **`ℚ(α)` base field.** Needs `Factor[…, Extension -> α]`, algebraic-coefficient `PolynomialExtendedGCD`, and `AlgebraicNumber` canonicalisation threaded through Phases 0, 3, 4. The complex Galois-orbit slowdown noted under "Known limitations" is a symptom of missing canonicalisation at this layer.
+- **Transcendental tower** (`exp`, `log` of algebraic expressions). Separate algorithm on top; full Risch on a tower of differential-field extensions.
+
+### Effort sketch (cheapest → most involved)
+
+1. `Residues.m`, the HNF in `Normalize.m`, divisor arithmetic in `Divisor.m` — port in place.
+2. General AF arithmetic via a structure tensor — mechanical once the integral basis is available.
+3. General Hermite solver — small, local change once the derivation matrix is exposed.
+4. General integral basis — new module, large (van Hoeij 1994 or Trager Ch 3).
+5. Puiseux-series place arithmetic — new module, large; feeds 6, 7, 8.
+6. Genus, infinity shift, log-part engine generalisations — sit on top of (4) and (5).
+
+---
+
 ## Running the tests
 
 ```
