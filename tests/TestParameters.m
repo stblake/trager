@@ -155,6 +155,55 @@ tassert["1/((x-b) Sqrt[x^2 + a])",
 tassert["1/Sqrt[a x^2 + b]",
   parametricVerifySurface[1/Sqrt[a x^2 + b], x, {a, b}]["ok"]];
 
+tsection["tier 2c: parametric quartic radicand (positive genus, torsion divisor)"];
+
+(* Regression for ∫(a x^4 + b)^(-1/4) dx — the curve has positive genus but *)
+(* the relevant divisor class is torsion (k = 12 in Kauers' iterated-       *)
+(* squaring search), so an elementary antiderivative exists. Previously the *)
+(* default method silently returned a NonElementary failure / unevaluated  *)
+(* result; the "Auto" dispatcher now falls through Trager → Miller         *)
+(* (Trager K[z]-HNF over ℚ(a,b,√(ab)) is too slow within the 30s budget;   *)
+(* Miller's Gröbner-basis path completes in seconds).                       *)
+tassert["(a x^4 + b)^(-1/4) [Auto / default]",
+  parametricVerifySurface[(a x^4 + b)^(-1/4), x, {a, b}]["ok"]];
+
+(* Same integrand via the Kauers heuristic: previously emitted             *)
+(* GroebnerBasis::mnmord2 because the parameter symbols a,b were sucked    *)
+(* into GroebnerBasis's variable list, making the 3×3 block-order matrix   *)
+(* non-spanning. CoefficientDomain -> RationalFunctions in kauersGroebner *)
+(* now treats {a,b} as elements of K(a,b). We assert (i) no mnmord2       *)
+(* message is emitted and (ii) the antiderivative differentiates back.    *)
+Module[{result, msgEmitted = False},
+  result = Check[
+    Quiet[
+      IntegrateTrager[(a x^4 + b)^(-1/4), x,
+        "Parameters" -> {a, b},
+        "LogTermsMethod" -> "Kauers"],
+      {GroebnerBasis::mnmord2}],
+    msgEmitted = True;,
+    {GroebnerBasis::mnmord2}
+  ];
+  tassert["(a x^4 + b)^(-1/4) [Kauers] emits no GroebnerBasis::mnmord2",
+    !msgEmitted];
+  tassert["(a x^4 + b)^(-1/4) [Kauers] returns a verified antiderivative",
+    Module[{diff, samples, tol = 10^-25, prec = 50},
+      If[MatchQ[result, _Failure], False,
+        diff = D[result, x] - (a x^4 + b)^(-1/4);
+        SeedRandom[20260424];
+        samples = Quiet @ Table[
+          Module[{paramRules, xVal},
+            paramRules = {a -> RandomReal[{1/3, 23/7}, WorkingPrecision -> prec],
+                          b -> RandomReal[{1/3, 23/7}, WorkingPrecision -> prec]};
+            xVal = RandomReal[{-7/2, 11/2}, WorkingPrecision -> prec];
+            N[diff /. paramRules /. x -> xVal, prec]
+          ],
+          {6}];
+        AllTrue[samples,
+          NumericQ[#] && Abs[Re[#]] < tol && Abs[Im[#]] < tol &]
+      ]
+    ]]
+];
+
 tsection["tier 3: name-collision robustness"];
 
 (* Internal Phase 2 shift point is named `a` in Module locals; verify this *)

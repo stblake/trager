@@ -174,13 +174,33 @@ residueQBasis[residues_List] := Module[
       Function[r, AnyTrue[$tragerParameters, !FreeQ[r, #] &]]];
 
   If[hasParams,
-    (* Treat each residue as a single-coordinate vector — the residues live *)
-    (* in ℚ(params) which is itself the base field, so the natural basis   *)
-    (* of the residue span over ℚ has at most one element (since the span  *)
-    (* is at most 1-dimensional as a ℚ(params)-subspace of ℚ(params)). The *)
-    (* greedy logic below handles this correctly when given vectors {{r}}. *)
-    nf      = residues;
-    vectors = {#} & /@ residues,
+    (* Two sub-cases:                                                         *)
+    (*   (a) residues are pure rational functions of the parameters — they   *)
+    (*       live in ℚ(params) itself, so each residue is a 1-vector and    *)
+    (*       MatrixRank/LinearSolve over ℚ(params) work as a 1-D space.    *)
+    (*   (b) residues contain the imaginary unit I — they live in           *)
+    (*       ℚ(params)(i), a 2-D extension. Decompose each residue into      *)
+    (*       (re, im) coordinates against the {1, i} basis so basisCoeffs    *)
+    (*       come out as integers (not Gaussian integers); otherwise         *)
+    (*       MatrixRank misses the i-direction (treating I as a constant)    *)
+    (*       and LinearSolve produces I-valued coefficients which then       *)
+    (*       fail to type-check inside divisorScale (k_Integer pattern).     *)
+    (* Detection uses Complex (the Mathematica head for non-real numeric     *)
+    (* literals like I) — symbolic forms like Sqrt[2] have a different head  *)
+    (* and would need a more general algebraic-extension treatment, which is *)
+    (* out of scope for the current parametric integrand class.              *)
+    Module[{hasI, sub, reList, imList},
+      hasI = AnyTrue[residues, !FreeQ[#, Complex] &];
+      If[hasI,
+        sub = residues /. Complex[r_, im_] :> r + im * sqrtNegOnePh;
+        reList = Coefficient[#, sqrtNegOnePh, 0] & /@ sub;
+        imList = Coefficient[#, sqrtNegOnePh, 1] & /@ sub;
+        nf      = residues;
+        vectors = Transpose[{reList, imList}],
+        nf      = residues;
+        vectors = {#} & /@ residues
+      ]
+    ],
 
     (* Algebraic-number path (no parameters). Reduce to a common number    *)
     (* field via ToNumberField.                                             *)

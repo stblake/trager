@@ -47,10 +47,18 @@
 
 ClearAll[kauersGroebner];
 
+(* CoefficientDomain -> RationalFunctions tells GroebnerBasis to treat any  *)
+(* symbol outside `vars` (i.e. user parameters in $tragerParameters) as a   *)
+(* coefficient in K(params), not an extra polynomial variable.  Without it  *)
+(* GroebnerBasis includes every parameter in its variable set and the 3x3  *)
+(* MonomialOrder matrix `millerBlockOrder[3]` no longer spans every term,  *)
+(* triggering GroebnerBasis::mnmord2.                                       *)
+
 kauersGroebner[exprs_List, vars_List] :=
   GroebnerBasis[exprs, vars,
-    MonomialOrder -> millerBlockOrder[Length[vars]],
-    Method -> "GroebnerWalk"];
+    MonomialOrder      -> millerBlockOrder[Length[vars]],
+    CoefficientDomain  -> RationalFunctions,
+    Method             -> "GroebnerWalk"];
 
 (* GB equality: same monomial order ⟹ identical reduced GB iff same ideal. *)
 ClearAll[kauersGBEqualQ];
@@ -114,7 +122,12 @@ kauersRoots[gg_, t_Symbol] := Module[{deg = Exponent[gg, t], rootFn},
 ClearAll[KauersLogTerms];
 
 Options[KauersLogTerms] = {
-  MaxTorsionOrder -> 10,
+  (* MaxTorsionOrder is the bound on Kauers's iterated-squaring loop.        *)
+  (* Upstream kauers.m uses 10; for parametric inputs whose principal-      *)
+  (* divisor torsion is larger (e.g. ∫(a x^4 + b)^(-1/4) dx needs k = 12)   *)
+  (* a tighter bound silently emits no log terms. 16 covers known cases    *)
+  (* without significant overhead in the typical k <= 4 path.               *)
+  MaxTorsionOrder -> 16,
   (* Accepted for call-site compatibility with constructLogTerms; ignored. *)
   Multiplicities  -> Automatic,
   QBasis          -> Automatic,

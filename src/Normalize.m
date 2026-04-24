@@ -376,23 +376,71 @@ hermiteNormalFormOverKz[mat_List, z_Symbol, ext_List] := Module[
       ]
     ];
 
-    (* Eliminate column j below the pivot via polynomial extended GCD.    *)
+    (* Eliminate column j below the pivot. Two strategies:                  *)
+    (*                                                                        *)
+    (*  - Pure ℚ or ℚ(α) (no transcendental params): one-step Bezout via    *)
+    (*    polynomialExtendedGCD. Fast because cofactors are numeric / in a   *)
+    (*    small algebraic extension.                                          *)
+    (*                                                                        *)
+    (*  - ℚ(params): iterative swap-and-subtract Euclidean reduction. The    *)
+    (*    built-in PolynomialExtendedGCD blows up exponentially on           *)
+    (*    multivariate-rational coefficients (intermediate Bezout cofactors  *)
+    (*    have multivariate polynomial numerators of combinatorial size),    *)
+    (*    so we avoid cofactors entirely: at each step, divide the larger-  *)
+    (*    degree row by the smaller-degree row and subtract. This gives the *)
+    (*    same HNF (same row-span, gcd as pivot entry) but only needs one   *)
+    (*    PolynomialQuotient per step. Observed: 7.3s → 0.8s on a deg-16 /  *)
+    (*    deg-34 column reduction in ℚ(a,b)[z].                            *)
     Do[
       If[!zeroQ[M[[i, j]]],
-        egcd = If[ext === {},
-          polynomialExtendedGCD[M[[j, j]], M[[i, j]], z],
-          polynomialExtendedGCDExt[M[[j, j]], M[[i, j]], z, ext]
-        ];
-        {g, u, v} = egcd;
-        a        = exactQuotient[M[[j, j]], g, z, ext];
-        b        = exactQuotient[M[[i, j]], g, z, ext];
-        newRowJ  = u * M[[j]] + v * M[[i]];
-        newRowI  = a * M[[i]] - b * M[[j]];
-        (* Canonicalise the pivot row to prevent expression blow-up in    *)
-        (* subsequent pEGCD calls -- critical for algebraic-coefficient   *)
-        (* polynomials where unsimplified Bezout combinations grow fast.  *)
-        M[[j]]   = canonicalizePolyEntry[#, z, ext] & /@ newRowJ;
-        M[[i]]   = canonicalizePolyEntry[#, z, ext] & /@ newRowI
+        If[ext === {} && $tragerParameters =!= {},
+          (* Swap-and-subtract Euclidean on (rJ, rI) over ℚ(params)[z]:    *)
+          (* at each step kill a single leading term of the higher-degree  *)
+          (* col-j entry by subtracting (coefficient ratio)·z^Δ·(other row) *)
+          (* and canonicalise the new col-j entry. The other column        *)
+          (* entries accumulate the row operation and are canonicalised    *)
+          (* once at the end. We cannot use PolynomialExtendedGCD + Bezout *)
+          (* on ℚ(params)[z] — the Bezout cofactors blow up exponentially  *)
+          (* (same reason tracking a 2×2 transformation matrix in this     *)
+          (* loop would blow up: its cofactor entries are exactly the      *)
+          (* Bezout cofactors the iterative approach avoids materialising).*)
+          Module[{rJ = M[[j]], rI = M[[i]], dJ, dI, lcJ, lcI, tmul,
+                  rIj, rJj},
+            rJj = rJ[[j]];
+            rIj = rI[[j]];
+            dJ = Exponent[Expand[rJj], z];
+            dI = Exponent[Expand[rIj], z];
+            While[!zeroQ[rIj],
+              If[dI < dJ,
+                {rJ, rI} = {rI, rJ};
+                {rJj, rIj} = {rIj, rJj};
+                {dJ, dI} = {dI, dJ};
+              ];
+              lcJ  = Coefficient[rJj, z, dJ];
+              lcI  = Coefficient[rIj, z, dI];
+              tmul = paramCancelCoeff[lcI / lcJ] * z^(dI - dJ);
+              rI   = rI - tmul * rJ;
+              rIj  = canonicalizePolyEntry[rI[[j]], z, ext];
+              rI[[j]] = rIj;
+              dI   = If[zeroQ[rIj], -Infinity, Exponent[Expand[rIj], z]];
+            ];
+            M[[j]] = canonicalizePolyEntry[#, z, ext] & /@ rJ;
+            M[[i]] = canonicalizePolyEntry[#, z, ext] & /@ rI;
+          ]
+          ,
+          (* Bezout via polynomial extended GCD (fast path for ℚ / ℚ(α)) *)
+          egcd = If[ext === {},
+            polynomialExtendedGCD[M[[j, j]], M[[i, j]], z],
+            polynomialExtendedGCDExt[M[[j, j]], M[[i, j]], z, ext]
+          ];
+          {g, u, v} = egcd;
+          a        = exactQuotient[M[[j, j]], g, z, ext];
+          b        = exactQuotient[M[[i, j]], g, z, ext];
+          newRowJ  = u * M[[j]] + v * M[[i]];
+          newRowI  = a * M[[i]] - b * M[[j]];
+          M[[j]]   = canonicalizePolyEntry[#, z, ext] & /@ newRowJ;
+          M[[i]]   = canonicalizePolyEntry[#, z, ext] & /@ newRowI
+        ]
       ],
       {i, j + 1, m}
     ];

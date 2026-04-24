@@ -172,14 +172,16 @@ millerMultiplicitySearch[hGens_List, F_, ri_, zInt_Symbol,
   Do[
     hPow = idealPowerGens[hGens, mu];
     expectedGB = GroebnerBasis[Join[{F, ri}, hPow], vars,
-      MonomialOrder -> Lexicographic];
+      MonomialOrder     -> Lexicographic,
+      CoefficientDomain -> RationalFunctions];
     (* Try individual GB elements first, then combinatorial sums of up to  *)
     (* $millerMaxSumSubsetSize elements. Sorted by LeafCount so the        *)
     (* simplest candidate wins.                                             *)
     pCandidates = millerCandidateLogands[expectedGB, $millerMaxSumSubsetSize];
     Do[
       candidateGB = GroebnerBasis[{F, ri, p}, vars,
-        MonomialOrder -> Lexicographic];
+        MonomialOrder     -> Lexicographic,
+        CoefficientDomain -> RationalFunctions];
       If[millerGBEqualQ[candidateGB, expectedGB],
         roots = millerRootsOfUnivariate[ri, zInt];
         contributions = Map[
@@ -321,9 +323,15 @@ MillerKauersLogTerms[residues_List, remainderAF_?afElementQ, Dpoly_,
   (* Step 2: Kauers' block-order Gröbner basis. *)
   zInt     = Unique["z$miller"];
   blockOrd = millerBlockOrder[3];   (* [x, y] > zInt, 3 vars total *)
+  (* CoefficientDomain -> RationalFunctions: parameters in $tragerParameters *)
+  (* are treated as elements of K(params), not as extra polynomial variables. *)
+  (* Without this, GroebnerBasis includes them in its variable set and the   *)
+  (* 3x3 block-order matrix `blockOrd` no longer spans every term, raising   *)
+  (* GroebnerBasis::mnmord2.                                                 *)
   G = GroebnerBasis[{F, vFull, u - zInt * vprime}, {x, y, zInt},
-    MonomialOrder -> blockOrd,
-    Method -> "GroebnerWalk"];
+    MonomialOrder      -> blockOrd,
+    CoefficientDomain  -> RationalFunctions,
+    Method             -> "GroebnerWalk"];
 
   (* Step 3: R_z = minimal univariate-in-z element of the block-order GB.   *)
   (* Kept as the "elementarity witness" (if it's not in Q[z], integrand is *)

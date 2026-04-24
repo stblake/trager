@@ -32,7 +32,9 @@ Options (all option names are strings):\n\
   \"Simplify\" -> True      apply RootReduce/Simplify to the final result\n\
   \"ShiftBound\" -> 32      max |a| tried when searching for a regular Mobius shift\n\
   \"MaxGenus\" -> Infinity  gate on computed genus (0 = strict genus-0 only)\n\
-  \"LogTermsMethod\" -> \"Trager\"  one of \"Trager\", \"Miller\", \"Kauers\"\n\
+  \"LogTermsMethod\" -> \"Auto\"  one of \"Auto\", \"Trager\", \"Miller\", \"Kauers\"; \
+\"Auto\" tries Trager, then Miller, then Kauers, returning the first verified \
+antiderivative\n\
   \"Parameters\" -> Automatic  list of free symbols treated as transcendental\n\
                               parameters (base field becomes Q(params)).\n\
                               Automatic auto-detects every free symbol in\n\
@@ -57,7 +59,19 @@ Options[IntegrateTrager] = {
   "MaxGenus"        -> Infinity,  (* Infinity: permissive, rely on verifier *)
                                   (* 0: strict genus-0 only                 *)
                                   (* >= g: attempt genus <= g inputs         *)
-  "LogTermsMethod"  -> "Trager",  (* "Trager" | "Miller" | "Kauers"         *)
+  "LogTermsMethod"  -> "Auto",    (* "Auto" | "Trager" | "Miller" | "Kauers" *)
+                                  (* "Auto" tries "Trager", "Miller", and    *)
+                                  (* "Kauers" in order, returning the first  *)
+                                  (* whose antiderivative passes the step-10  *)
+                                  (* derivative-vs-integrand check. Each     *)
+                                  (* method has its own algorithmic strengths *)
+                                  (* and corner-case gaps -- "Trager" handles *)
+                                  (* the parametric + algebraic-residue cases *)
+                                  (* (Q(a,b)(Sqrt[a+b^2])) where Miller hits  *)
+                                  (* MillerKauersTorsionBoundExceeded; Miller *)
+                                  (* handles the parametric Q(a)(I) cases    *)
+                                  (* (e.g. (a x^4+b)^(-1/4)) where Trager's   *)
+                                  (* K[z]-HNF over Q(a)[z] blows up.          *)
                                   (* "MillerKauers" alias accepted for back- *)
                                   (* compat; canonical name is "Miller".     *)
   "Parameters"      -> Automatic  (* List of free symbols to treat as       *)
@@ -121,6 +135,84 @@ resolveParameters[optVal_, integrand_, relation_, x_Symbol, y_Symbol] := Module[
   params
 ];
 
+(* "Auto" mode dispatcher: try Trager (the most algorithmically rigorous,    *)
+(* with strict Z-basis structure), then Miller (faster than Trager on        *)
+(* parametric + Gaussian-residue cases like (a x^4+b)^(-1/4) where Trager's *)
+(* K[z]-HNF over Q(a,I)[z] blows up), then Kauers (heuristic, last-resort   *)
+(* — its partial-result behaviour catches anything the first two miss).     *)
+(* TimeConstrained budgets keep a slow Trager attempt (status §3.1) from    *)
+(* dominating wall time on parametric inputs.                                *)
+$tragerAutoMethodBudgetSeconds = {30, 90, 60};
+$tragerAutoMethodSequence      = {"Trager", "Miller", "Kauers"};
+
+ClearAll[autoModeIntegrate, autoExtractAntideriv, autoMethodSucceededQ];
+
+(* Antiderivative extractor that knows how to peek inside the                *)
+(* {"Diagnostics" -> True} return form <|"Result" -> ..., "Diagnostics" -> *)
+(* ...|>.                                                                    *)
+autoExtractAntideriv[res_Association] :=
+  If[KeyExistsQ[res, "Result"], res["Result"], res];
+autoExtractAntideriv[res_] := res;
+
+(* A method has "succeeded" iff its antiderivative is not a Failure, not a  *)
+(* TimeConstrained sentinel, and contains no HoldForm[IntegrateTrager][...] *)
+(* residual (Kauers's partial-result wrap).                                  *)
+autoMethodSucceededQ[res_] := With[{ad = autoExtractAntideriv[res]},
+  !MatchQ[ad, _Failure] && ad =!= $tragerAutoTimedOut &&
+    FreeQ[ad, HoldForm[IntegrateTrager]]
+];
+
+autoModeIntegrate[integrand_, {x_Symbol, y_Symbol, relation_},
+                  opts : OptionsPattern[IntegrateTrager]] := Module[
+  {filteredOpts, results, methodResult, idx, kauersAttempt},
+  filteredOpts = FilterRules[{opts}, Except["LogTermsMethod"]];
+
+  results = {};
+  Do[
+    methodResult = TimeConstrained[
+      IntegrateTrager[integrand, {x, y, relation},
+        Sequence @@ filteredOpts,
+        "LogTermsMethod" -> $tragerAutoMethodSequence[[idx]]],
+      $tragerAutoMethodBudgetSeconds[[idx]],
+      $tragerAutoTimedOut
+    ];
+    AppendTo[results, $tragerAutoMethodSequence[[idx]] -> methodResult];
+    If[autoMethodSucceededQ[methodResult], Return[methodResult, Module]],
+    {idx, Length[$tragerAutoMethodSequence]}
+  ];
+
+  (* All methods failed/timed out. Prefer a Kauers partial result IF it     *)
+  (* integrated at least some piece (final ≠ 0) — that carries genuine     *)
+  (* progress the caller can inspect. A bare HoldForm[IntegrateTrager][...]*)
+  (* (final == 0) means Kauers integrated nothing and we'd be hiding the    *)
+  (* upstream NonElementary diagnosis behind a meaningless wrap, so prefer *)
+  (* the actual Failure in that case.                                       *)
+  kauersAttempt = "Kauers" /. results;
+  Module[{kauersAd = autoExtractAntideriv[kauersAttempt]},
+    If[!MatchQ[kauersAttempt, _Failure] &&
+        kauersAttempt =!= $tragerAutoTimedOut &&
+        !MatchQ[kauersAd, HoldForm[IntegrateTrager][__]] &&
+        kauersAd =!= 0,
+      Return[kauersAttempt, Module]
+    ]
+  ];
+
+  (* Otherwise return the first meaningful (non-timeout) attempt — earlier *)
+  (* methods (Trager, Miller) carry the most rigorous Failure diagnosis    *)
+  (* (e.g. "NonElementary" with the AttemptedAntiderivative + Residual     *)
+  (* metadata).                                                             *)
+  Module[{nonTimeout = Select[results,
+                              #[[2]] =!= $tragerAutoTimedOut &]},
+    If[nonTimeout =!= {},
+      First[nonTimeout][[2]],
+      tragerFailure["AutoMethodsExhausted",
+        "Reason"           -> "every method timed out",
+        "MethodSequence"   -> $tragerAutoMethodSequence,
+        "BudgetSeconds"    -> $tragerAutoMethodBudgetSeconds]
+    ]
+  ]
+];
+
 IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
                 opts : OptionsPattern[]] := Catch[Module[
   {
@@ -138,6 +230,14 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
     final, diagnostics
   },
 
+  (* Auto mode dispatches to the explicit-method form via                     *)
+  (* autoModeIntegrate. Doing this BEFORE option validation keeps "Auto"     *)
+  (* invisible to the per-method pipeline — every downstream branch sees a   *)
+  (* concrete method name.                                                    *)
+  If[logMethodOpt === "Auto",
+    Throw[autoModeIntegrate[integrand, {x, y, relation}, opts]]
+  ];
+
   paramsResolved = resolveParameters[paramsOpt, integrand, relation, x, y];
   If[tragerFailureQ[paramsResolved], Throw[paramsResolved]];
 
@@ -152,7 +252,7 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
     "Miller" | "MillerKauers",         MillerKauersLogTerms,
     "Kauers",                          KauersLogTerms,
     _, Throw[tragerFailure["BadInput",
-      "Reason" -> "\"LogTermsMethod\" must be \"Trager\", \"Miller\", or \"Kauers\"",
+      "Reason" -> "\"LogTermsMethod\" must be \"Auto\", \"Trager\", \"Miller\", or \"Kauers\"",
       "Value"  -> logMethodOpt]]
   ];
 

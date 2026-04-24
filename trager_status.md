@@ -248,7 +248,7 @@ All option names are strings (to avoid colliding with the built-in `System`Verbo
 - `"Simplify" -> True`. Skip the final `RootReduce` pass when `False`.
 - `"ShiftBound" -> 32`. How far the phase-2 a-search goes.
 - `"MaxGenus" -> Infinity`. Gate threshold. A finite `0` refuses positive-genus input with `PositiveGenus`; the default `Infinity` (or a finite bound `g ≥ 1`) lets the pipeline proceed, then a verification pass (step 10) differentiates the result and compares to the integrand under `y → g^(1/n)`. On mismatch, `Failure["NonElementary", ...]`. On match, the `"verified" -> True` entry is added to diagnostics.
-- `"LogTermsMethod" -> "Trager"`. One of `"Trager"`, `"Miller"`, or `"Kauers"` (the alias `"MillerKauers"` is also accepted for back-compat).
+- `"LogTermsMethod" -> "Auto"`. One of `"Auto"`, `"Trager"`, `"Miller"`, or `"Kauers"` (the alias `"MillerKauers"` is also accepted for back-compat). `"Auto"` (default) tries `"Trager"`, `"Miller"`, then `"Kauers"` in order, with per-method `TimeConstrained` budgets `{30, 90, 60}` seconds, returning the first verified antiderivative; this handles cases where one method's algorithmic gap (e.g. `"Trager"`'s K[z]-HNF over ℚ(a)(I)[z] on `(a x⁴+b)^(-1/4)`, or `"Miller"`'s `MillerKauersTorsionBoundExceeded` on `1/((x−b)√(x²+a))`) is covered by another. If every method's antiderivative fails verification, the first non-timeout failure (typically `"NonElementary"`) is returned.
 
 A short-circuit after Phase 3: if the Hermite remainder is all-zero AF coefficients, Phases 4 and 5 are skipped (pure-algebraic antiderivatives like `∫ x/√(x²+1) dx = √(x²+1)`).
 
