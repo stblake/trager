@@ -86,12 +86,17 @@ simplifyHDenominator[h_?afElementQ, A_, basis_?basisDescriptorQ] := Module[
   coeffs = h["Coeffs"];
   dens   = Denominator[Together[#]] & /@ coeffs;
   d      = PolynomialLCM @@ dens;
-  (* Iteratively remove the A-supported part of d. *)
+  (* Iteratively remove the A-supported part of d.                            *)
+  (* PolynomialGCD needs Extension -> Automatic because h coefficients may   *)
+  (* carry algebraic numbers from Phase-4 residues (Trager Ch 5 §3); without *)
+  (* it the gcd over ℚ misses the shared factors that only appear over ℚ(α). *)
+  (* PolynomialQuotient/Remainder already handle algebraic-number            *)
+  (* coefficients natively (no Extension option needed / accepted).           *)
   remaining = d;
-  gPoly = PolynomialGCD[remaining, A];
+  gPoly = PolynomialGCD[remaining, A, Extension -> Automatic];
   While[Exponent[gPoly, x] > 0,
     remaining = PolynomialQuotient[remaining, gPoly, x];
-    gPoly     = PolynomialGCD[remaining, A];
+    gPoly     = PolynomialGCD[remaining, A, Extension -> Automatic];
   ];
   dCoprime = remaining;
   If[Exponent[dCoprime, x] <= 0,
@@ -114,6 +119,9 @@ simplifyHModA[h_?afElementQ, A_, basis_?basisDescriptorQ] := Module[
     {i, Length[coeffs]}
   ];
   r = Expand[A * d];
+  (* PolynomialRemainder already handles algebraic-number coefficients       *)
+  (* natively when ℚ(α) is the coefficient field — no Extension option is    *)
+  (* needed (nor accepted by PolynomialRemainder).                            *)
   reduced = Table[
     PolynomialRemainder[Expand[nums[[i]]], r, x],
     {i, Length[nums]}
@@ -160,12 +168,15 @@ reduceH[h_?afElementQ, D1_, DD_, malpha_Integer,
     N0      = Numerator[Together[normVal]];
     Ncur    = N0;
     N1      = 1;
-    (* Iteratively strip DD-factors from Ncur, accumulating into N1.        *)
-    gPoly = PolynomialGCD[Ncur, DD];
+    (* Iteratively strip DD-factors from Ncur, accumulating into N1.         *)
+    (* PolynomialGCD needs Extension -> Automatic: when α is algebraic the   *)
+    (* norm carries α-dependent coefficients and the gcd over ℚ would miss   *)
+    (* the shared factor with DD.                                             *)
+    gPoly = PolynomialGCD[Ncur, DD, Extension -> Automatic];
     While[Exponent[gPoly, x] > 0,
       N1    = Expand[N1 * gPoly];
       Ncur  = PolynomialQuotient[Ncur, gPoly, x];
-      gPoly = PolynomialGCD[Ncur, DD];
+      gPoly = PolynomialGCD[Ncur, DD, Extension -> Automatic];
     ];
     If[Exponent[N1, x] === malpha, Throw[hAdj]],
     {j, 0, maxJ}
@@ -233,7 +244,13 @@ residueDivisor[GtildeAF_?afElementQ, Dpoly_, alpha_,
   (* Compute the actual x-projection of supp(h1) intersected with supp(Dpoly). *)
   normVal = afNorm[h1, basis];
   N0      = Numerator[Together[normVal]];
-  D1      = PolynomialGCD[N0, Dpoly];
+  (* Extension -> Automatic: when the residue α is algebraic (e.g. a root of *)
+  (* an irreducible factor of R(Z) of degree ≥ 2, as on a genus-1 curve with *)
+  (* multiple Galois orbits of residues) the norm N0 carries α-dependent     *)
+  (* coefficients. GCD over ℚ then fails to see the shared factor — D1 = 1 — *)
+  (* and the residue divisor silently collapses to the trivial one (h = 1).  *)
+  (* Enabling the extension lets Mathematica lift to ℚ(α)[x] automatically.  *)
+  D1      = PolynomialGCD[N0, Dpoly, Extension -> Automatic];
 
   (* Degenerate: h1's norm has no support over Dpoly (residue does not     *)
   (* actually occur here). Return a trivial divisor.                       *)
@@ -246,7 +263,7 @@ residueDivisor[GtildeAF_?afElementQ, Dpoly_, alpha_,
   (* drops the leading constant, First /@ extracts the irreducible factor,*)
   (* and the product over those factors is the squarefree part.          *)
   Disc = Times @@ (First /@ Rest[FactorList[g]]);
-  D3   = PolynomialGCD[D1, Disc];
+  D3   = PolynomialGCD[D1, Disc, Extension -> Automatic];
   D2 = If[Exponent[D3, x] > 0,
          PolynomialQuotient[D1, D3, x],
          D1];

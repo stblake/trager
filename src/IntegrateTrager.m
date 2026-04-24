@@ -56,9 +56,23 @@ Options[IntegrateTrager] = {
   "Diagnostics"     -> False,
   "Simplify"        -> True,
   "ShiftBound"      -> 32,
-  "MaxGenus"        -> Infinity,  (* Infinity: permissive, rely on verifier *)
-                                  (* 0: strict genus-0 only                 *)
-                                  (* >= g: attempt genus <= g inputs         *)
+  "MaxGenus"        -> Infinity,  (* Infinity: permissive (genus gate off). *)
+                                  (* 0: strict genus-0 only.                 *)
+                                  (* >= g: attempt genus <= g inputs.         *)
+  "Verify"          -> False,     (* Opt-in step-10 derivative-vs-integrand  *)
+                                  (* check. Default False: return Phase-6    *)
+                                  (* output as-is. When True, differentiate  *)
+                                  (* the proposed antiderivative and compare *)
+                                  (* (symbolically, then numerically), and   *)
+                                  (* on mismatch promote to a NonElementary  *)
+                                  (* or ImplementationIncomplete Failure.    *)
+                                  (* The symbolic pass can be extremely slow *)
+                                  (* on expressions containing Root/RootSum *)
+                                  (* (Kauers log parts with degree ≥ 4      *)
+                                  (* irreducible R(Z) factors), which is why *)
+                                  (* it is off by default — callers who need *)
+                                  (* correctness guarantees enable it at use *)
+                                  (* site.                                     *)
   "LogTermsMethod"  -> "Auto",    (* "Auto" | "Trager" | "Miller" | "Kauers" *)
                                   (* "Auto" tries "Trager", "Miller", and    *)
                                   (* "Kauers" in order, returning the first  *)
@@ -165,13 +179,20 @@ autoMethodSucceededQ[res_] := With[{ad = autoExtractAntideriv[res]},
 autoModeIntegrate[integrand_, {x_Symbol, y_Symbol, relation_},
                   opts : OptionsPattern[IntegrateTrager]] := Module[
   {filteredOpts, results, methodResult, idx, kauersAttempt},
-  filteredOpts = FilterRules[{opts}, Except["LogTermsMethod"]];
+  (* Strip both "LogTermsMethod" (we set it per-iteration) and "Verify" (we  *)
+  (* force it True so the cascade can tell whether a method's output is     *)
+  (* actually correct; the user-level default is False). Without the forced *)
+  (* Verify, every method's Phase-6 output would pass autoMethodSucceededQ  *)
+  (* on shape alone and Auto would lock in on Trager's partial result       *)
+  (* instead of trying Miller / Kauers.                                     *)
+  filteredOpts = FilterRules[{opts}, Except["LogTermsMethod" | "Verify"]];
 
   results = {};
   Do[
     methodResult = TimeConstrained[
       IntegrateTrager[integrand, {x, y, relation},
         Sequence @@ filteredOpts,
+        "Verify"         -> True,
         "LogTermsMethod" -> $tragerAutoMethodSequence[[idx]]],
       $tragerAutoMethodBudgetSeconds[[idx]],
       $tragerAutoTimedOut
@@ -221,6 +242,7 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
     simplifyOpt   = TrueQ[OptionValue["Simplify"]],
     shiftBoundOpt = OptionValue["ShiftBound"],
     maxGenusOpt   = OptionValue["MaxGenus"],
+    verifyOpt     = TrueQ[OptionValue["Verify"]],
     logMethodOpt  = OptionValue["LogTermsMethod"],
     paramsOpt     = OptionValue["Parameters"],
     paramsResolved,
@@ -364,14 +386,14 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
     AssociateTo[diagnostics, "reducedFrame" -> ra["reducedFrame"]];
   ];
 
-  (* Step 10: UNCONDITIONAL verification of the antiderivative.              *)
+  (* Step 10: OPT-IN verification of the antiderivative (see "Verify" option).*)
   (* Differentiate the proposed result and compare to the original integrand*)
   (* under y -> g^(1/n). Verification happens in the REDUCED frame, because *)
-  (* validated["R"] was rewritten in the reduced generator at the Phase 0  *)
-  (* rescale step. On mismatch we cannot distinguish (i) a genuinely non-  *)
-  (* elementary integrand (legitimate on genus > 0) from (ii) a Phase-5    *)
+  (* validated["R"] was rewritten in the reduced generator at the Phase 0   *)
+  (* rescale step. On mismatch we cannot distinguish (i) a genuinely non-   *)
+  (* elementary integrand (legitimate on genus > 0) from (ii) a Phase-5     *)
   (* implementation gap. We report ImplementationIncomplete for genus-0     *)
-  (* failures (Phase-5 bug) and NonElementary for genus > 0.                *)
+  (* failures (Phase-5 bug) and NonElementary for genus > 0.                 *)
   (*                                                                         *)
   (* The verifier first tries symbolic Simplify + zeroQ. If that cannot     *)
   (* decide (common when the antiderivative contains nested algebraic       *)
@@ -380,6 +402,13 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
   (* function vanishes on an open set iff it vanishes identically, so       *)
   (* multiple agreeing zero samples at >40-digit precision is a reliable    *)
   (* identity test for our (rational + algebraic + log) class of expressions.*)
+  (*                                                                         *)
+  (* Skipped by default because the symbolic pass is expensive on large    *)
+  (* algebraic expressions (Simplify over nested Root/RootSum can take     *)
+  (* minutes and still fail to prove zero, leaving numerics as the only     *)
+  (* ground truth anyway). Enable "Verify" -> True for a correctness check *)
+  (* at the cost of wall time.                                               *)
+  If[verifyOpt,
   Module[{yRoot, integrandSub, reducedFrameAntideriv, diff, diffSimp,
           symbolicZero, numericVerified, samples, tol, prec = 60, nSamples = 6},
     yRoot = reduced["g"]^(1/reduced["n"]);
@@ -462,7 +491,7 @@ algorithmic details and the port plan in TragerPlan.md §13."
           "Residual" -> diffSimp
         ]]
     ]
-  ];
+  ]];
 
   If[diagOpt,
     <|"Result" -> final, "Diagnostics" -> diagnostics|>,
