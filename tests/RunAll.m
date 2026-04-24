@@ -25,7 +25,8 @@ $testFiles = {
   "TestIntegrate.m",
   "TestGenusPositive.m",
   "TestRescale.m",
-  "TestSurface.m"
+  "TestSurface.m",
+  "TestParameters.m"
 };
 
 $overallExit = 0;

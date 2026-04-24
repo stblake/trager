@@ -32,7 +32,15 @@ Options (all option names are strings):\n\
   \"Simplify\" -> True      apply RootReduce/Simplify to the final result\n\
   \"ShiftBound\" -> 32      max |a| tried when searching for a regular Mobius shift\n\
   \"MaxGenus\" -> Infinity  gate on computed genus (0 = strict genus-0 only)\n\
-  \"LogTermsMethod\" -> \"Trager\"  one of \"Trager\", \"Miller\", \"Kauers\"\n\n\
+  \"LogTermsMethod\" -> \"Trager\"  one of \"Trager\", \"Miller\", \"Kauers\"\n\
+  \"Parameters\" -> Automatic  list of free symbols treated as transcendental\n\
+                              parameters (base field becomes Q(params)).\n\
+                              Automatic auto-detects every free symbol in\n\
+                              (integrand, relation) other than x and y.\n\
+                              Antiderivatives in this mode are valid on a\n\
+                              Zariski-open subset of parameter values\n\
+                              (i.e. except at finitely many specialisations\n\
+                              where the genus or factor structure changes).\n\n\
 Examples:\n\
   IntegrateTrager[1/Sqrt[x^2 + 1], x]\n\
   IntegrateTrager[1/y, {x, y, y^2 == x^2 + 1}]\n\
@@ -49,10 +57,69 @@ Options[IntegrateTrager] = {
   "MaxGenus"        -> Infinity,  (* Infinity: permissive, rely on verifier *)
                                   (* 0: strict genus-0 only                 *)
                                   (* >= g: attempt genus <= g inputs         *)
-  "LogTermsMethod"  -> "Trager"   (* "Trager" | "Miller" | "Kauers"         *)
+  "LogTermsMethod"  -> "Trager",  (* "Trager" | "Miller" | "Kauers"         *)
                                   (* "MillerKauers" alias accepted for back- *)
                                   (* compat; canonical name is "Miller".     *)
+  "Parameters"      -> Automatic  (* List of free symbols to treat as       *)
+                                  (* transcendental parameters: the base    *)
+                                  (* field becomes ℚ(params) instead of ℚ. *)
+                                  (* Automatic = auto-detect every free     *)
+                                  (* symbol in (integrand, relation) other  *)
+                                  (* than x and y. Pass {} to force ℚ-only. *)
 };
+
+(* Auto-detect parameters: every Symbol in (integrand, relation) that is    *)
+(* (a) not x or y, (b) not in System` context, (c) has no value attached.   *)
+(* The third condition rules out built-in mathematical constants like Pi,  *)
+(* I, E, etc. (which already evaluate or are protected) and any user-bound *)
+(* numeric symbol (which is a literal value, not a parameter).             *)
+
+ClearAll[autoDetectParameters];
+autoDetectParameters[expr_, x_Symbol, y_Symbol] := Module[{symbols},
+  symbols = DeleteDuplicates @ Cases[{expr},
+    s_Symbol /; s =!= x && s =!= y &&
+                Context[s] =!= "System`" &&
+                !ValueQ[s],
+    {0, Infinity}
+  ];
+  symbols
+];
+
+(* Resolve the user's "Parameters" option value to an explicit list,        *)
+(* auto-detecting when Automatic is passed. Validates that none of the      *)
+(* parameters collide with x, y, or each other.                             *)
+
+ClearAll[resolveParameters];
+resolveParameters[optVal_, integrand_, relation_, x_Symbol, y_Symbol] := Module[
+  {params, dups, badSymbols},
+  params = If[optVal === Automatic,
+    autoDetectParameters[{integrand, relation}, x, y],
+    optVal
+  ];
+  If[!ListQ[params],
+    Return[tragerFailure["BadInput",
+      "Reason" -> "\"Parameters\" must be a list of symbols (or Automatic)",
+      "Value"  -> optVal]]
+  ];
+  badSymbols = Select[params, !MatchQ[#, _Symbol] &];
+  If[badSymbols =!= {},
+    Return[tragerFailure["BadInput",
+      "Reason" -> "every \"Parameters\" entry must be a Symbol",
+      "BadEntries" -> badSymbols]]
+  ];
+  If[MemberQ[params, x] || MemberQ[params, y],
+    Return[tragerFailure["BadInput",
+      "Reason" -> "x and y cannot be parameters",
+      "Parameters" -> params, "x" -> x, "y" -> y]]
+  ];
+  dups = Select[Tally[params], #[[2]] > 1 &];
+  If[dups =!= {},
+    Return[tragerFailure["BadInput",
+      "Reason" -> "duplicate entries in \"Parameters\"",
+      "Duplicates" -> dups[[All, 1]]]]
+  ];
+  params
+];
 
 IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
                 opts : OptionsPattern[]] := Catch[Module[
@@ -63,11 +130,22 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
     shiftBoundOpt = OptionValue["ShiftBound"],
     maxGenusOpt   = OptionValue["MaxGenus"],
     logMethodOpt  = OptionValue["LogTermsMethod"],
+    paramsOpt     = OptionValue["Parameters"],
+    paramsResolved,
     logTermsFn,
     validated, reduced, genus, basis,
     zLoc, zResLoc, shiftResult, basisShifted, hermRes, residueRes, logTerms,
     final, diagnostics
   },
+
+  paramsResolved = resolveParameters[paramsOpt, integrand, relation, x, y];
+  If[tragerFailureQ[paramsResolved], Throw[paramsResolved]];
+
+  (* Block the pipeline body so $tragerParameters is dynamically scoped     *)
+  (* over every helper call. baseFieldElementQ, zeroQ, detectExtension-     *)
+  (* Generators, and friends consult this variable; threading it through    *)
+  (* every signature would touch every file with no algorithmic benefit.    *)
+  Block[{$tragerParameters = paramsResolved},
 
   logTermsFn = Switch[logMethodOpt,
     "Trager",                          constructLogTerms,
@@ -216,11 +294,19 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
       (* precision. The samples are accepted as zero if every sample's     *)
       (* magnitude (real and imaginary parts) is below 10^(-prec/2).       *)
       (* SeedRandom for reproducibility across invocations.                *)
+      (* In parametric mode every parameter is also bound to a random      *)
+      (* generic real, so the sample tests "generically zero" — exactly   *)
+      (* the semantics the algorithm guarantees on the Zariski-open set.  *)
       samples = Quiet @ Block[{},
         SeedRandom[20240515];
         Table[
-          N[diffSimp /. x -> RandomReal[{-7/2, 11/2},
-                                        WorkingPrecision -> prec], prec],
+          Module[{paramRules},
+            paramRules = (# -> RandomReal[{1/3, 23/7},
+                                          WorkingPrecision -> prec]) & /@
+                         $tragerParameters;
+            N[diffSimp /. paramRules /. x -> RandomReal[{-7/2, 11/2},
+                                          WorkingPrecision -> prec], prec]
+          ],
           {nSamples}
         ]
       ];
@@ -282,4 +368,6 @@ algorithmic details and the port plan in TragerPlan.md §13."
     <|"Result" -> final, "Diagnostics" -> diagnostics|>,
     final
   ]
+
+  ] (* end Block[$tragerParameters] *)
 ]];

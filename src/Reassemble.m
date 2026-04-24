@@ -99,8 +99,14 @@ reassemble[algAF_?afElementQ, logTerms_List, basis_?basisDescriptorQ,
   (* no such pair is present.                                             *)
   result = logsToArcTan[result, originalX];
 
+  (* RootReduce only canonicalises algebraic-number expressions; when the    *)
+  (* result is parametric (contains a user-declared transcendental from     *)
+  (* $tragerParameters) we fall back to Simplify, which respects ℚ(params).*)
   If[simplifyResult,
-    result = RootReduce[result]
+    result = If[$tragerParameters === {},
+      RootReduce[result],
+      Simplify[result]
+    ]
   ];
 
   <|"result" -> result, "reducedFrame" -> reducedFrame|>

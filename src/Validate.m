@@ -48,13 +48,20 @@ validateInput[integrand_, x_Symbol, y_Symbol, relation_] := Module[
   gUser = rhs;
 
   (* --- Step 2: coefficient field check --- *)
-  (* g must be a rational function in x with rational coefficients. If the   *)
-  (* user supplied AlgebraicNumber[...] or a free symbol, reject.            *)
+  (* g must be a rational function in x with coefficients in the base field *)
+  (* ℚ(params) — see $tragerParameters in Common.m. If the user supplies    *)
+  (* AlgebraicNumber[...] or a free symbol that is NOT in $tragerParameters *)
+  (* we reject as out-of-scope.                                              *)
   If[!rationalFunctionQ[gUser, x],
-    nonRat = Cases[{gUser}, s_Symbol /; s =!= x, {0, Infinity}] // Union;
+    nonRat = Cases[{gUser},
+      s_Symbol /; s =!= x && !MemberQ[$tragerParameters, s],
+      {0, Infinity}
+    ] // Union;
     Return[tragerFailure["UnsupportedBaseField",
-      "Reason" -> "radicand is not a rational function over Q in x",
+      "Reason" -> "radicand is not a rational function over the declared \
+base field Q(parameters) in x",
       "g" -> gUser,
+      "Parameters" -> $tragerParameters,
       "NonRationalSymbols" -> nonRat
     ]]
   ];
@@ -88,8 +95,10 @@ validateInput[integrand_, x_Symbol, y_Symbol, relation_] := Module[
   (* --- Step 5: integrand shape --- *)
   If[!rationalInXYQ[integrandNew, x, y],
     Return[tragerFailure["BadInput",
-      "Reason" -> "integrand is not rational in (x, y) over Q",
-      "Integrand" -> integrand
+      "Reason" -> "integrand is not rational in (x, y) over the declared \
+base field Q(parameters)",
+      "Integrand" -> integrand,
+      "Parameters" -> $tragerParameters
     ]]
   ];
 

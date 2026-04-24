@@ -113,6 +113,27 @@ incompleteFailure[subreason_String, rule_Rule, more___Rule] :=
 (* matters.                                                                  *)
 
 (* ::Section:: *)
+(* Parametric base-field state                                                *)
+(*                                                                           *)
+(* $tragerParameters is the dynamically-scoped list of free symbols the user *)
+(* has declared as transcendental parameters. The top-level IntegrateTrager  *)
+(* wraps its pipeline body in Block[{$tragerParameters = ...}, ...] so all   *)
+(* downstream field-aware predicates (rationalPolynomialQ, rationalInXYQ,   *)
+(* zeroQ, detectExtensionGenerators, ...) can consult it without changing   *)
+(* their signatures.                                                          *)
+(*                                                                           *)
+(* When $tragerParameters is empty (the default), all predicates fall back   *)
+(* to the original ℚ-only behaviour: an exact match for the historical Trager*)
+(* port. When non-empty, the base field is treated as ℚ(p_1, ..., p_k); a    *)
+(* coefficient is "in the field" if it is a rational function in the         *)
+(* parameters with rational numeric coefficients.                             *)
+(*                                                                           *)
+(* The variable lives in Trager`Private` so it cannot collide with any user *)
+(* symbol (which lives in Global`).                                          *)
+
+If[!ValueQ[$tragerParameters], $tragerParameters = {}];
+
+(* ::Section:: *)
 (* Robust zero-test                                                          *)
 (*                                                                           *)
 (* PossibleZeroQ on expressions with nested Root[] / fractional-power         *)
@@ -123,19 +144,43 @@ incompleteFailure[subreason_String, rule_Rule, more___Rule] :=
 (* a canonical-form expression; RootReduce handles algebraic-number         *)
 (* collisions exactly wherever it can, falling back to PossibleZeroQ's     *)
 (* heuristic only for genuinely ambiguous transcendental input.             *)
+(*                                                                           *)
+(* Parametric mode: when $tragerParameters is non-empty, RootReduce is       *)
+(* unsafe — it does not canonicalize expressions in ℚ(params), and on free  *)
+(* symbols it may either hang or produce a non-canonical answer. We instead *)
+(* run Together + Cancel and test PossibleZeroQ on the result. The test is  *)
+(* then "generically zero on the parameter space", i.e. zero on a Zariski-  *)
+(* open subset; the algorithm operates on this generic stratum, and special-*)
+(* value degeneracies are not detected. Document this in the user-facing    *)
+(* docstring of IntegrateTrager.                                             *)
 
 ClearAll[zeroQ];
-zeroQ[e_] := PossibleZeroQ[e // Together // Cancel // RootReduce];
+zeroQ[e_] := If[$tragerParameters === {},
+  PossibleZeroQ[e // Together // Cancel // RootReduce],
+  PossibleZeroQ[e // Together // Cancel]
+];
 
 ClearAll[detectExtensionGenerators];
 detectExtensionGenerators[expr_] := Module[{roots, radicals},
-  (* Explicit algebraic-number heads *)
-  roots = Cases[expr, _Root | _AlgebraicNumber, {0, Infinity}];
+  (* Explicit algebraic-number heads. We only treat as algebraic those Root  *)
+  (* / AlgebraicNumber objects whose defining polynomial is FREE of any user *)
+  (* parameter — a Root in a parameter-bearing polynomial is not a number,   *)
+  (* it is an algebraic *function* of the parameter, and is handled          *)
+  (* implicitly by ℚ(params)-arithmetic rather than by the algebraic-        *)
+  (* extension code path.                                                     *)
+  roots = Cases[expr,
+    r : (_Root | _AlgebraicNumber) /;
+      AllTrue[$tragerParameters, FreeQ[r, #] &] :> r,
+    {0, Infinity}
+  ];
   (* Fractional-power radicals: (c)^(p/q) with c a numeric constant and q>1.  *)
   (* Mathematica emits residues in this form — e.g. (-1/3)^(1/3) — rather    *)
-  (* than as Root[] objects, so we must detect these too.                     *)
+  (* than as Root[] objects, so we must detect these too. We also skip       *)
+  (* radicals whose base contains a parameter — those are transcendental in  *)
+  (* the parameter and are handled by ℚ(params) directly.                    *)
   radicals = Cases[expr,
-    Power[c_, r_Rational] /; NumericQ[c] && Denominator[r] > 1 :>
+    Power[c_, r_Rational] /; NumericQ[c] && Denominator[r] > 1 &&
+      AllTrue[$tragerParameters, FreeQ[c, #] &] :>
       Power[c, r],
     {0, Infinity}
   ];
@@ -143,32 +188,55 @@ detectExtensionGenerators[expr_] := Module[{roots, radicals},
 ];
 
 (* ::Section:: *)
-(* Rational-in-x and polynomial-in-x checks over Q *)
+(* Rational-in-x and polynomial-in-x checks over the base field             *)
+(*                                                                           *)
+(* When $tragerParameters is empty the base field is ℚ and a coefficient is *)
+(* admissible iff Element[#, Rationals]. When parameters are present the    *)
+(* base field is ℚ(params); a coefficient is admissible iff it is a         *)
+(* rational function in the parameters with rational numeric scalars.       *)
+(* The latter is equivalent to "PolynomialQ[num, params] and PolynomialQ[   *)
+(* den, params] with rational scalar coefficients" after clearing.          *)
 
-(* These avoid a dependence on order-of-arguments: we test directly against *)
-(* the integer/rational coefficient classes that Mathematica uses.          *)
+(* Predicate: c is in the base field (ℚ or ℚ(params)). *)
+ClearAll[baseFieldElementQ];
+baseFieldElementQ[c_] := If[$tragerParameters === {},
+  TrueQ[Element[c, Rationals]],
+  Module[{t = Together[c], num, den, scalars},
+    num = Numerator[t]; den = Denominator[t];
+    PolynomialQ[num, $tragerParameters] && PolynomialQ[den, $tragerParameters] &&
+      (scalars = Flatten[{
+         CoefficientList[num, $tragerParameters],
+         CoefficientList[den, $tragerParameters]
+       }];
+       AllTrue[scalars, TrueQ[Element[#, Rationals]] &])
+  ]
+];
 
+(* Polynomial in x with coefficients in the base field. *)
 rationalPolynomialQ[expr_, x_Symbol] :=
   PolynomialQ[expr, x] &&
-  AllTrue[CoefficientList[expr, x], Element[#, Rationals] &];
+  AllTrue[CoefficientList[expr, x], baseFieldElementQ];
 
-rationalFunctionQ[expr_, x_Symbol] := Module[{num, den},
-  num = Together[expr] // Numerator;
-  den = Together[expr] // Denominator;
+(* Rational function in x with coefficients in the base field. *)
+rationalFunctionQ[expr_, x_Symbol] := Module[{t, num, den},
+  t = Together[expr];
+  num = Numerator[t];
+  den = Denominator[t];
   rationalPolynomialQ[num, x] && rationalPolynomialQ[den, x]
 ];
 
-(* Predicate: expression is rational in (x, y) over Q.                       *)
+(* Predicate: expression is rational in (x, y) over the base field.          *)
 (* Implementation: clear the y-denominator against y^n - g (handled later);  *)
 (* here we only check the shape by treating y as an independent symbol.      *)
 
-rationalInXYQ[expr_, x_Symbol, y_Symbol] := Module[{num, den},
-  num = Together[expr] // Numerator;
-  den = Together[expr] // Denominator;
+rationalInXYQ[expr_, x_Symbol, y_Symbol] := Module[{t, num, den, scalars},
+  t   = Together[expr];
+  num = Numerator[t];
+  den = Denominator[t];
   PolynomialQ[num, {x, y}] && PolynomialQ[den, {x, y}] &&
-  AllTrue[
-    Join[CoefficientList[num, {x, y}] // Flatten,
-         CoefficientList[den, {x, y}] // Flatten],
-    Element[#, Rationals] &
-  ]
+    (scalars = Flatten[{
+       CoefficientList[num, {x, y}],
+       CoefficientList[den, {x, y}]
+     }];
+     AllTrue[scalars, baseFieldElementQ])
 ];

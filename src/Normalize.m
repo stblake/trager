@@ -90,12 +90,12 @@ infValueRational[expr_, z_Symbol] := Module[{t, num, den, degN, degD},
   Which[
     degD > degN, 0,   (* strictly zero at infinity *)
     degD == degN,
-      Simplify[Coefficient[num, z, degN] / Coefficient[den, z, degD]],
+      Cancel[Together[Coefficient[num, z, degN] / Coefficient[den, z, degD]]],
     True,
       (* pole at infinity: return leading coefficient with an x-scale. *)
       (* Only used when the caller has already normalized, so treat as *)
       (* a dominant Laurent leading coefficient.                        *)
-      Simplify[Coefficient[num, z, degN] / Coefficient[den, z, degD]]
+      Cancel[Together[Coefficient[num, z, degN] / Coefficient[den, z, degD]]]
   ]
 ];
 
@@ -215,8 +215,8 @@ polynomialExtendedGCD[p_, q_, z_Symbol] := Module[{r},
 ClearAll[reduceExtCoeff];
 reduceExtCoeff[c_, ext_List] := Which[
   zeroQ[c], 0,
-  ext === {}, Cancel[Together[c]],
-  True, RootReduce[Together[c]]
+  ext =!= {}, RootReduce[Together[c]],
+  True, Cancel[Together[c]]
 ];
 
 (* Helpers: degree and leading coefficient of a polynomial in x.            *)
@@ -298,15 +298,30 @@ polynomialExtendedGCDExt[a_, b_, x_Symbol, ext_List] := Module[
 ];
 
 (* canonicalizePolyEntry: reduce an intermediate HNF entry to keep        *)
-(* expression size bounded on matrices with algebraic-number coefficients.*)
-(* When ext is nonempty we push coefficients through reduceExtCoeff so    *)
-(* Root/AlgebraicNumber representatives stay canonical across steps.      *)
+(* expression size bounded on matrices with algebraic-number or           *)
+(* parametric coefficients.                                                *)
+(*                                                                           *)
+(* - ext non-empty (algebraic-number extension): push coefficients         *)
+(*   through reduceExtCoeff so Root/AlgebraicNumber representatives stay  *)
+(*   canonical across steps.                                                *)
+(* - $tragerParameters non-empty (transcendental extension): collect        *)
+(*   coefficients in z over ℚ(params), each coefficient passed through    *)
+(*   Cancel[Together[...]] to keep multivariate rational functions in     *)
+(*   reduced form. Without this, repeated PolynomialExtendedGCD calls     *)
+(*   accumulate uncancelled (a − 1)^k or (a + 1)^k factors, blowing up    *)
+(*   the K[z]-HNF in seconds.                                              *)
+(* - Otherwise (pure ℚ path): just Expand.                                 *)
+
+ClearAll[paramCancelCoeff];
+paramCancelCoeff[c_] := If[zeroQ[c], 0, Cancel[Together[c]]];
 
 ClearAll[canonicalizePolyEntry];
 canonicalizePolyEntry[expr_, x_Symbol, ext_List] := Which[
   zeroQ[expr], 0,
-  ext === {}, Expand[expr],
-  True, collectCoeffs[expr, x, ext]
+  ext =!= {}, collectCoeffs[expr, x, ext],
+  $tragerParameters =!= {},
+    Collect[Cancel[Together[expr]], x, paramCancelCoeff],
+  True, Expand[expr]
 ];
 
 (* Backward-compatible single-argument variant (pure ℚ path).              *)
@@ -318,9 +333,18 @@ canonicalizePolyEntry[expr_] :=
 
 ClearAll[exactQuotient];
 exactQuotient[a_, b_, x_Symbol, ext_List] :=
-  If[ext === {},
-    PolynomialQuotient[a, b, x],
-    First[polyDivideExt[a, b, x, ext]]
+  Which[
+    ext =!= {},
+      First[polyDivideExt[a, b, x, ext]],
+    $tragerParameters =!= {},
+      (* PolynomialQuotient with rational-function (in params) coefficients *)
+      (* leaves un-cancelled common factors; route through Cancel after    *)
+      (* division so subsequent HNF steps see normalized entries.           *)
+      Module[{q = PolynomialQuotient[a, b, x]},
+        Collect[Cancel[Together[q]], x, paramCancelCoeff]
+      ],
+    True,
+      PolynomialQuotient[a, b, x]
   ];
 
 ClearAll[hermiteNormalFormOverKz];
@@ -456,7 +480,10 @@ scaledInfLeadValue[c_, j_Integer, basis_?basisDescriptorQ] := Module[
   degD = Exponent[den, z];
   lcN  = Coefficient[num, z, degN];
   lcD  = Coefficient[den, z, degD];
-  Simplify[lcN / lcD]
+  (* Together + Cancel is enough to canonicalise a ratio of two polynomials *)
+  (* in the parameters; Simplify is too aggressive (and can hang) on        *)
+  (* parametric expressions.                                                 *)
+  Cancel[Together[lcN / lcD]]
 ];
 
 (* Per-ROW scaled min order at infinity: for row i, the min over j of      *)
@@ -529,7 +556,9 @@ normalizeAtInfinity[mat_List, basis_?basisDescriptorQ] := Module[
   While[iter < maxIter,
     iter++;
     N = buildInfLeadMatrix[M, ks, basis];
-    detN = Simplify[Det[N]];
+    (* Together + Cancel canonicalises ratios over ℚ(params) without the    *)
+    (* combinatorial blow-up that Simplify can trigger on parametric input. *)
+    detN = Cancel[Together[Det[N]]];
     If[!zeroQ[detN], Break[]];
 
     (* Left-nullspace of N: vectors ℓ with ℓ · N = 0. NullSpace[Transpose[N]] *)
@@ -564,7 +593,8 @@ normalizeAtInfinity[mat_List, basis_?basisDescriptorQ] := Module[
       {i, 1, n}
     ];
 
-    combined = Simplify /@ combined;
+    (* Together + Cancel is the parameter-safe canonical-form pass.         *)
+    combined = Cancel[Together[#]] & /@ combined;
     M[[i0]] = combined;
     ks[[i0]] = rowScaledMinOrder[M[[i0]], basis];
     If[ks[[i0]] === Infinity, ks[[i0]] = 0];

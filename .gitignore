@@ -9,3 +9,11 @@
 # Editor
 *.swp
 *~
+
+# Claude Code local state
+.claude/
+
+# Third-party reference sources and papers (not redistributed)
+papers/
+axiom_algrisch_source_code/
+maple_algrisch_source_code/

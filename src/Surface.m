@@ -67,6 +67,9 @@ substituteRadical[expr_, radicand_, n_Integer, y_Symbol, x_Symbol] := Module[
 IntegrateTrager[f_, x_Symbol, opts : OptionsPattern[]] := Module[
   {radicals, radicand, n, yTmp, rewritten, result, distinct},
 
+  (* Internal y-symbol: lives in Trager`Private` so it is freshly named per *)
+  (* call (yTmp$NNN under Module renaming) and cannot collide with any user *)
+  (* parameter name like "y", "a", or even "yTmp".                           *)
   radicals = findRadicals[f, x];
 
   (* No radicals: purely rational in x, nothing to do here (core does not   *)

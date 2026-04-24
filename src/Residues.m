@@ -56,10 +56,24 @@ computeResidues[remainder_?afElementQ, B_, basis_?basisDescriptorQ,
   Rstripped = If[Zstrip > 0, PolynomialQuotient[RZ, ZVar^Zstrip, ZVar], RZ];
 
   (* Normalize by dividing out the gcd of integer coefficients to keep the  *)
-  (* display tidy -- the roots are unchanged.                                *)
+  (* display tidy -- the roots are unchanged. In parametric mode we use     *)
+  (* PolynomialGCD over the parameters so the "content" is a polynomial in *)
+  (* the parameters; dividing it out keeps R in compact form.               *)
   If[rationalPolynomialQ[Rstripped, ZVar],
-    RprimitiveLC = GCD @@ Rationalize[CoefficientList[Rstripped, ZVar]];
-    Rnormalized = If[RprimitiveLC =!= 0, Expand[Rstripped / RprimitiveLC], Rstripped],
+    Module[{coeffList = CoefficientList[Rstripped, ZVar]},
+      RprimitiveLC = Which[
+        coeffList === {} || AllTrue[coeffList, zeroQ],
+          0,
+        $tragerParameters === {},
+          GCD @@ Rationalize[coeffList],
+        True,
+          PolynomialGCD @@ coeffList
+      ];
+      Rnormalized = If[!zeroQ[RprimitiveLC],
+        Cancel[Together[Rstripped / RprimitiveLC]],
+        Rstripped
+      ]
+    ],
     Rnormalized = Rstripped
   ];
 
@@ -127,7 +141,7 @@ computeResidues[remainder_?afElementQ, B_, basis_?basisDescriptorQ,
 
 ClearAll[residueQBasis];
 residueQBasis[residues_List] := Module[
-  {allRat, nf, algEntries, gen, dim, vectors, basisIndices, basisVectors,
+  {allRat, hasParams, nf, algEntries, gen, dim, vectors, basisIndices, basisVectors,
    coeffs, denomLCMs, scaledCoeffs, scaledBasis},
 
   (* Empty residue list: return trivial basis.                               *)
@@ -149,27 +163,50 @@ residueQBasis[residues_List] := Module[
     ]
   ];
 
-  (* Reduce to a common number field via ToNumberField.                     *)
-  (* ToNumberField expresses each input either as AlgebraicNumber[gen, c]   *)
-  (* or -- for rational inputs -- as the bare rational. We unify by padding *)
-  (* rationals with zeros in the power-basis representation.                 *)
-  nf = Quiet @ Check[ToNumberField[residues], $Failed];
-  If[nf === $Failed,
-    Return[<|
-      "qBasis" -> residues,
-      "basisCoeffs" -> IdentityMatrix[Length[residues]]
-    |>]
+  (* Parametric mode: when residues are rational functions of the user's    *)
+  (* declared parameters (no algebraic numbers involved), ToNumberField     *)
+  (* will fail or refuse the parameter-bearing input. We fall through to    *)
+  (* the generic greedy-rank decomposition below, which uses MatrixRank /   *)
+  (* LinearSolve over ℚ(params) — Mathematica handles those symbolically. *)
+  (* Detection: a residue contains a parameter iff !FreeQ on any element.   *)
+  hasParams = $tragerParameters =!= {} &&
+    AnyTrue[residues,
+      Function[r, AnyTrue[$tragerParameters, !FreeQ[r, #] &]]];
+
+  If[hasParams,
+    (* Treat each residue as a single-coordinate vector — the residues live *)
+    (* in ℚ(params) which is itself the base field, so the natural basis   *)
+    (* of the residue span over ℚ has at most one element (since the span  *)
+    (* is at most 1-dimensional as a ℚ(params)-subspace of ℚ(params)). The *)
+    (* greedy logic below handles this correctly when given vectors {{r}}. *)
+    nf      = residues;
+    vectors = {#} & /@ residues,
+
+    (* Algebraic-number path (no parameters). Reduce to a common number    *)
+    (* field via ToNumberField.                                             *)
+    nf = Quiet @ Check[ToNumberField[residues], $Failed];
+    If[nf === $Failed,
+      Return[<|
+        "qBasis" -> residues,
+        "basisCoeffs" -> IdentityMatrix[Length[residues]]
+      |>]
+    ];
+    algEntries = Cases[nf, AlgebraicNumber[_, _]];
+    If[algEntries === {},
+      Return[<|"qBasis" -> {1}, "basisCoeffs" -> ({#} & /@ residues)|>]
+    ];
+    gen = First[algEntries][[1]];
+    dim = Length[First[algEntries][[2]]];
+    vectors = nf /. {
+      AlgebraicNumber[_, c_] :> c,
+      r_ /; Element[r, Rationals] :> PadRight[{r}, dim]
+    };
   ];
-  algEntries = Cases[nf, AlgebraicNumber[_, _]];
-  If[algEntries === {},
-    Return[<|"qBasis" -> {1}, "basisCoeffs" -> ({#} & /@ residues)|>]
-  ];
-  gen = First[algEntries][[1]];
-  dim = Length[First[algEntries][[2]]];
-  vectors = nf /. {
-    AlgebraicNumber[_, c_] :> c,
-    r_ /; Element[r, Rationals] :> PadRight[{r}, dim]
-  };
+
+  (* From here on the algorithm is shared between both paths (algebraic    *)
+  (* and parametric): we have a list of vectors (each entry a coordinate   *)
+  (* vector relative to a chosen ambient basis) and pick residues greedily *)
+  (* by rank.                                                                *)
 
   (* Pick basis residues greedily: iterate in list order, add each residue *)
   (* whose inclusion increases the rank of the accumulated basis.         *)
@@ -216,8 +253,14 @@ residueQBasis[residues_List] := Module[
 
   (* Clear column denominators: scale each basis residue down by the LCM    *)
   (* of denominators in its column, so the coefficient matrix is integer.   *)
+  (* Use PolynomialLCM in the parametric branch — coefficient denominators  *)
+  (* are then polynomials in the parameters, not integers — and ordinary    *)
+  (* LCM in the algebraic branch where denominators are plain integers.     *)
   denomLCMs = Table[
-    LCM @@ (Denominator /@ coeffs[[All, i]]),
+    If[$tragerParameters === {},
+      LCM @@ (Denominator /@ coeffs[[All, i]]),
+      PolynomialLCM @@ (Denominator[Together[#]] & /@ coeffs[[All, i]])
+    ],
     {i, Length[basisIndices]}
   ];
   scaledCoeffs = Table[

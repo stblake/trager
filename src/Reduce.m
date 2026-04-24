@@ -73,8 +73,26 @@ reduceIrreducibility[n_Integer /; n >= 2, g_, x_Symbol] := Module[
   (* alpha = c^(1/d) * prod p_i^(e_i/d). If c^(1/d) is not rational, we    *)
   (* would need to work over Q(alpha); that is deferred (see §11), so we   *)
   (* emit UnsupportedBaseField with the concrete reduced form attached.    *)
+  (*                                                                         *)
+  (* Parametric mode: if c contains user parameters, c^(1/d) is generically *)
+  (* an algebraic function of the parameters and adjoining it would force  *)
+  (* a positive-genus base extension. Rather than fail, we decline the     *)
+  (* index reduction and keep (n, g) as-is — the algorithm continues to   *)
+  (* work, just with a slightly larger n than the absolutely-irreducible  *)
+  (* one. Correctness is unaffected (every divisor of y^n - g still       *)
+  (* contains the principal one); efficiency may degrade by at most a     *)
+  (* factor d.                                                             *)
   cDthRoot = c^(1/dGcd);
   If[!(Head[cDthRoot] === Integer || Head[cDthRoot] === Rational),
+    If[$tragerParameters =!= {} && !FreeQ[c, Alternatives @@ $tragerParameters],
+      (* Decline the d-fold reduction; keep n and g unchanged.            *)
+      Return[<|
+        "n" -> n,
+        "g" -> Expand[c * Times @@ (#[[1]]^#[[2]] & /@ reducedPairs)],
+        "yScale" -> yScale,
+        "extension" -> Missing[]
+      |>]
+    ];
     Return[tragerFailure["UnsupportedBaseField",
       "Reason" -> "reduced factor has a leading coefficient outside Q",
       "d" -> dGcd,
