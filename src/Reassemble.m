@@ -92,6 +92,13 @@ reassemble[algAF_?afElementQ, logTerms_List, basis_?basisDescriptorQ,
   (* when Phase 5's HNF / lucky-integer step left a large scalar factor. *)
   result = monicifyLogs[result];
 
+  (* Conjugate-log -> ArcTan rewrite (real-valued display form). When two *)
+  (* log terms appear as a Z-pair  a Log[A + I B] + conj(a) Log[A - I B], *)
+  (* the imaginary parts cancel and the pair equals 2 Im[a] ArcTan[A/B]   *)
+  (* (up to the dual identity for purely real coefficients). No-op when   *)
+  (* no such pair is present.                                             *)
+  result = logsToArcTan[result, originalX];
+
   If[simplifyResult,
     result = RootReduce[result]
   ];

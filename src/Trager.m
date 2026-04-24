@@ -65,6 +65,7 @@ $TragerRoot = DirectoryName[
 (*   IdealDecomposition.m  — supports Miller method (Becker-Weispfenning)    *)
 (*   MillerKauersLogTerms.m — Phase 5 Miller method (Miller 2012)            *)
 (*   KauersLogTerms.m      — Phase 5 Kauers method (Kauers 2008)             *)
+(*   LogToArcTan.m         — Phase 6 conjugate-log -> ArcTan rewrite          *)
 (*   Reassemble.m          — Phase 6 Möbius and rescale inversions           *)
 (*   IntegrateTrager.m     — top-level pipeline (Ch 1 §2 outline)            *)
 (*   Surface.m             — surface-syntax `IntegrateTrager[f, x]`         *)
@@ -87,6 +88,7 @@ Get[FileNameJoin[{$TragerRoot, "TragerLogTerms.m"}]];
 Get[FileNameJoin[{$TragerRoot, "IdealDecomposition.m"}]];
 Get[FileNameJoin[{$TragerRoot, "MillerKauersLogTerms.m"}]];
 Get[FileNameJoin[{$TragerRoot, "KauersLogTerms.m"}]];
+Get[FileNameJoin[{$TragerRoot, "LogToArcTan.m"}]];
 Get[FileNameJoin[{$TragerRoot, "Reassemble.m"}]];
 Get[FileNameJoin[{$TragerRoot, "IntegrateTrager.m"}]];
 Get[FileNameJoin[{$TragerRoot, "Surface.m"}]];

@@ -21,6 +21,7 @@ $testFiles = {
   "TestIdealDecomposition.m",
   "TestTragerLogTerms.m",
   "TestMillerKauersLogTerms.m",
+  "TestLogToArcTan.m",
   "TestIntegrate.m",
   "TestGenusPositive.m",
   "TestRescale.m",
