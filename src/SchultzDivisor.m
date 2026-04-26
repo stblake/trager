@@ -47,6 +47,53 @@
 (* where the A_n/B_n iteration of Sch Lemma 4.6 needs them.                  *)
 
 (* ::Section:: *)
+(* Algebraic-extension canonicalization helper.                                *)
+(*                                                                              *)
+(* The Schultz HNF chain consumes matrices whose entries can carry algebraic-  *)
+(* number coefficients (e.g. ζ_n cube roots of unity from Phase-4 residues, or *)
+(* I·√3 traces from the Galois orbit collapse on n ≥ 3 inverses). On such      *)
+(* inputs `Together` and `Cancel` alone are insufficient — Mathematica leaves  *)
+(* expressions like                                                             *)
+(*    4 / (3 (4/3 + (4 I)/3 / (-I + √3) - 4/(√3 (-I + √3))))                   *)
+(* in unsimplified form, even though this denominator is identically 0 (it    *)
+(* drops out to ComplexInfinity under RootReduce). HNF pivot selection then    *)
+(* picks an entry that is "expression-nonzero" but real-zero, divides, and    *)
+(* generates the cascading 1/0 / ComplexInfinity errors visible to the user.   *)
+(*                                                                              *)
+(* schultzCanon[expr] is the universal canonicalizer for entries flowing       *)
+(* through the Schultz HNF / divisor pipeline:                                 *)
+(*   - On expressions free of algebraic-number heads (no Sqrt, no Power[_, _   *)
+(*     Rational] for non-trivial denominators, no Complex), it reduces to      *)
+(*     `Cancel[Together[…]]` — exactly the previous behaviour.                  *)
+(*   - On expressions that contain such heads, it pushes through               *)
+(*     `RootReduce[Together[…]]`, which canonicalizes algebraic identities     *)
+(*     (e.g. ((1+I√3)/2)^3 = 1) and reduces fractions like the above example  *)
+(*     to their genuine simplified form.                                        *)
+(*                                                                              *)
+(* RootReduce is robust but ~10-100× slower than Cancel/Together; the          *)
+(* algebraic-content guard ensures we only pay that cost when actually needed. *)
+(* Symbol heads from $tragerParameters are NOT treated as algebraic — they    *)
+(* are transcendental over ℚ and `Cancel[Together[…]]` is the right tool.      *)
+(*                                                                              *)
+(* This is the §10.1 "thread Extension through the HNF pipeline" plan from     *)
+(* TragerPlan.md, applied to the Schultz code path. The auto-detect form       *)
+(* avoids signature-changing every helper; the ext is implicit in the          *)
+(* expression itself.                                                           *)
+
+ClearAll[schultzAlgebraicQ];
+schultzAlgebraicQ[expr_] :=
+  Not @ FreeQ[
+    expr,
+    _Sqrt | Power[_?NumericQ, _Rational?(Denominator[#] > 1 &)] |
+      _Complex | _Root | _AlgebraicNumber
+  ];
+
+ClearAll[schultzCanon];
+schultzCanon[expr_] := Module[{t = Cancel[Together[expr]]},
+  If[schultzAlgebraicQ[t], RootReduce[t], t]
+];
+
+(* ::Section:: *)
 (* Predicate and constructor                                                  *)
 
 ClearAll[schultzDivisorQ];
@@ -81,7 +128,7 @@ schultzDivisorMake[aFin_List, aInf_List, basis_?basisDescriptorQ] := Module[
 
 ClearAll[schultzHNFFinite];
 schultzHNFFinite[mat_List, x_Symbol] := Module[
-  {matT, allDens, commonDen, polyM, hnf, nCols, trimmed},
+  {matT, allDens, commonDen, denDeg, denLC, polyM, ext, hnf, nCols, trimmed},
   (* Factor out a uniform scalar so the matrix has polynomial entries, HNF  *)
   (* the polynomial matrix, then divide the scalar back in. Scaling the    *)
   (* entire matrix by one k(x)-unit preserves the row-span as a k[x]-module *)
@@ -89,24 +136,51 @@ schultzHNFFinite[mat_List, x_Symbol] := Module[
   (* ideals. Per-row denominator clearing (an earlier attempt) would alter *)
   (* the determinant by a product of row-scalings, corrupting the divisor   *)
   (* degree — the failing `div(f·g) degree = 0` test caught this.            *)
-  matT = Map[Together, mat, {2}];
+  matT = Map[schultzCanon, mat, {2}];
   allDens = DeleteDuplicates @ Flatten[
     Map[Denominator, matT, {2}]
   ];
   commonDen = PolynomialLCM @@ Prepend[allDens, 1];
-  (* `Cancel[Together[…]]` here (rather than the bare `Expand` baked into     *)
-  (* `canonicalizePolyEntry`'s pure-ℚ branch) is required because the input  *)
-  (* matrix can carry sign-flipped denominators — e.g. an entry of the form  *)
-  (* `(-2-x^3)^(-1)`, which Mathematica leaves un-normalised even after      *)
-  (* `Together`. Multiplying such an entry by `commonDen = -2-x^3` yields    *)
-  (* the literal pair `(-2-x^3)^(-1)·(-2-x^3)` which `Expand` happily        *)
+  (* Make `commonDen` monic in x (degree-0 leading coefficient = 1). Without  *)
+  (* this, when matT entries carry rational scalar denominators (e.g. `1/2`   *)
+  (* arising from K(α)-extension Bezout cofactor cancellations), the         *)
+  (* PolynomialLCM picks up that constant scalar and the post-divide step    *)
+  (* would inject a `1/2` factor into the diagonal that the inner HNF's      *)
+  (* monic-normalisation cannot retroactively fix. Stripping the constant    *)
+  (* factor from `commonDen` keeps polyM polynomial (degree-0 entries with    *)
+  (* rational scalars are polynomials over ℚ(α)[x]), and the inner HNF's     *)
+  (* monic step then divides those scalars away inside the polynomial-HNF    *)
+  (* canonicalisation, yielding the correct ideal representative.             *)
+  denDeg = If[PolynomialQ[commonDen, x], Exponent[Expand[commonDen], x], 0];
+  denLC = If[denDeg > 0,
+    Coefficient[Expand[commonDen], x, denDeg],
+    commonDen
+  ];
+  If[!zeroQ[denLC] && !zeroQ[denLC - 1],
+    commonDen = Cancel[Together[commonDen / denLC]]
+  ];
+  (* `schultzCanon` (rather than the bare `Expand` baked into                 *)
+  (* `canonicalizePolyEntry`'s pure-ℚ branch) is required for two reasons:   *)
+  (* (1) the input matrix can carry sign-flipped denominators — e.g. an     *)
+  (* entry of the form `(-2-x^3)^(-1)`, which Mathematica leaves un-         *)
+  (* normalised even after `Together`. Multiplying by `commonDen = -2-x^3`   *)
+  (* yields the literal pair `(-2-x^3)^(-1)·(-2-x^3)` which `Expand` happily *)
   (* expands but does NOT cancel — leaving a non-polynomial entry that the   *)
   (* downstream `hermiteNormalFormOverKz` then divides 1/0 on. `Cancel`      *)
   (* simplifies these constructed-polynomial entries to their actual         *)
-  (* polynomial form. Surfaces under Schultz n >= 3 inverse, where the       *)
-  (* Galois orbit collapse routinely produces such sign-flipped fractions.   *)
-  polyM = Map[Cancel[Together[# * commonDen]] &, matT, {2}];
-  hnf = hermiteNormalFormOverKz[polyM, x, {}];
+  (* polynomial form. (2) when entries carry algebraic-number coefficients   *)
+  (* (e.g. ζ_n traces from Phase-4 residues), `Cancel`/`Together` alone     *)
+  (* leave Galois-cancellation artefacts; `schultzCanon` falls through to    *)
+  (* `RootReduce` so identically-zero entries are recognised as zero before  *)
+  (* HNF pivot selection picks them by mistake.                              *)
+  polyM = Map[schultzCanon[# * commonDen] &, matT, {2}];
+  (* Detect algebraic-extension generators in the polynomial matrix so that  *)
+  (* `hermiteNormalFormOverKz`'s polynomial extended-GCD operates over       *)
+  (* ℚ(α)[x] rather than treating α as a formal symbolic parameter. Without *)
+  (* this the Bezout cofactors silently miss factor-cancellations that only *)
+  (* hold in the true extension.                                              *)
+  ext = detectExtensionGenerators[polyM];
+  hnf = hermiteNormalFormOverKz[polyM, x, ext];
   (* HNF over k[x] of an m × n row-stack (m ≥ n) produces m rows, the last *)
   (* m − n of which are identically zero once the rank is n. For ideal    *)
   (* representation we want the top n × n block (the canonical square     *)
@@ -117,7 +191,7 @@ schultzHNFFinite[mat_List, x_Symbol] := Module[
   If[Length[trimmed] >= nCols,
     trimmed = Take[trimmed, nCols]
   ];
-  Map[Together[#/commonDen] &, trimmed, {2}]
+  Map[schultzCanon[#/commonDen] &, trimmed, {2}]
 ];
 
 (* ::Section:: *)
@@ -132,8 +206,13 @@ schultzHNFFinite[mat_List, x_Symbol] := Module[
 
 ClearAll[valInfinity];
 valInfinity[f_, x_Symbol] := Module[{ft, num, den, dN, dD},
-  ft = Together[f];
-  If[ft === 0, Return[Infinity]];
+  (* `schultzCanon` first: a real-zero entry with un-canonicalized algebraic-*)
+  (* number bloat would otherwise be misclassified as nonzero, returning    *)
+  (* a finite (wrong) valuation and steering HNF pivot selection into a     *)
+  (* division-by-zero. After RootReduce, true zeros collapse and we early-  *)
+  (* return Infinity correctly.                                              *)
+  ft = schultzCanon[f];
+  If[zeroQ[ft], Return[Infinity]];
   num = Numerator[ft]; den = Denominator[ft];
   dN = If[PolynomialQ[num, x], Exponent[num, x], 0];
   dD = If[PolynomialQ[den, x], Exponent[den, x], 0];
@@ -144,11 +223,15 @@ valInfinity[f_, x_Symbol] := Module[{ft, num, den, dN, dD},
 (* at infinity" of f ∈ k(x) is c·x^k, with k = −v_∞(f). Used to pivot HNF.  *)
 
 ClearAll[leadingMonomialAtInfinity];
-leadingMonomialAtInfinity[f_, x_Symbol] := Module[{ft, k, expand, coeff},
-  ft = Together[f];
-  If[ft === 0, Return[{0, -Infinity}]];
+leadingMonomialAtInfinity[f_, x_Symbol] := Module[{ft, k, coeff},
+  ft = schultzCanon[f];
+  If[zeroQ[ft], Return[{0, -Infinity}]];
   k = -valInfinity[ft, x];
-  coeff = Limit[ft / x^k, x -> Infinity];
+  (* Limit[ratio, x->Infinity] would compute the right value on entries     *)
+  (* whose leading coefficient is rational, but on algebraic-number entries  *)
+  (* it can return ComplexInfinity when the un-canonicalized leading term   *)
+  (* secretly equals 0. `schultzCanon` on the limit output catches this.    *)
+  coeff = schultzCanon[Limit[ft / x^k, x -> Infinity]];
   {coeff, k}
 ];
 
@@ -162,8 +245,8 @@ ClearAll[reduceAboveInfinityPivot];
 reduceAboveInfinityPivot[f_, pivotK_Integer, x_Symbol] := Module[
   {ft, num, den, quot, rem, polyPart, fracPart, lowPart, highPart, deg, i, c,
    laurent, tTerm},
-  ft = Together[f];
-  If[ft === 0, Return[{0, 0}]];
+  ft = schultzCanon[f];
+  If[zeroQ[ft], Return[{0, 0}]];
   num = Numerator[ft]; den = Denominator[ft];
   (* Split f = polyPart + fracPart where polyPart ∈ k[x] and fracPart has   *)
   (* deg(num) < deg(den) (equivalently v_∞(fracPart) ≥ 1).                  *)
@@ -233,7 +316,7 @@ reduceAboveInfinityPivot[f_, pivotK_Integer, x_Symbol] := Module[
       ]
     ]
   ];
-  {Together[highPart], Together[lowPart / x^pivotK]}
+  {schultzCanon[highPart], schultzCanon[lowPart / x^pivotK]}
 ];
 
 (* ::Section:: *)
@@ -253,7 +336,13 @@ reduceAboveInfinityPivot[f_, pivotK_Integer, x_Symbol] := Module[
 
 ClearAll[schultzHNFInfinity];
 schultzHNFInfinity[mat_List, x_Symbol] := Module[
-  {M = mat, m, n, j},
+  {M, m, n, j},
+  (* Front-load `schultzCanon` on every input entry so RootReduce-canonical *)
+  (* zeros surface before the pivot loop starts. Without this front-load   *)
+  (* the loop's `!zeroQ[M[[i, j]]]` test classifies an algebraically-zero  *)
+  (* but expression-nonzero entry as nonzero, picks it as the largest     *)
+  (* degree (= smallest v_∞), and divides by it.                            *)
+  M = Map[schultzCanon, mat, {2}];
   m = Length[M];
   n = If[m > 0, Length[First[M]], 0];
   Do[
@@ -281,16 +370,16 @@ schultzHNFInfinity[mat_List, x_Symbol] := Module[
           If[!zeroQ[M[[i, j]]],
             (* Quotient q = M[i,j] / pivot: the "floor" in k[[1/x]].         *)
             (* By pivot choice deg(M[i,j]) ≤ deg(pivot), so q ∈ k[[1/x]].    *)
-            q = Together[M[[i, j]] / pivot];
-            M[[i]] = Expand[M[[i]] - q * M[[j]]];
-            M[[i]] = Together /@ M[[i]];
+            q = schultzCanon[M[[i, j]] / pivot];
+            M[[i]] = M[[i]] - q * M[[j]];
+            M[[i]] = schultzCanon /@ M[[i]];
           ],
           {i, j + 1, m}
         ];
 
         (* Step 3: normalise pivot to x^{pivotK}.                             *)
         If[!zeroQ[pivotCoeff - 1],
-          M[[j]] = Together /@ (M[[j]] / pivotCoeff);
+          M[[j]] = schultzCanon /@ (M[[j]] / pivotCoeff);
         ];
 
         (* Step 4: reduce above-pivot entries to have no monomials of        *)
@@ -306,7 +395,7 @@ schultzHNFInfinity[mat_List, x_Symbol] := Module[
                 If[!zeroQ[qAbove],
                   Do[
                     If[k =!= j,
-                      M[[i, k]] = Together[M[[i, k]] - qAbove * M[[j, k]]];
+                      M[[i, k]] = schultzCanon[M[[i, k]] - qAbove * M[[j, k]]];
                     ],
                     {k, 1, n}
                   ]
@@ -394,11 +483,15 @@ schultzPrincipalDivisor[fAF_?afElementQ, basis_?basisDescriptorQ, y_Symbol] :=
     (*    (f·ψ_i)_{ψ_j} = (f·η_i)_{η_j} · x^{δ_j − δ_i} = Mf[j, i] · x^{δ_j − δ_i}.*)
     (* Row i, col j of aInf:                                                      *)
     aInfRows = Table[
-      Mf[[j, i]] * basis["x"]^(deltas[[j]] - deltas[[i]]),
+      schultzCanon[Mf[[j, i]] * basis["x"]^(deltas[[j]] - deltas[[i]])],
       {i, n}, {j, n}
     ];
 
-    schultzDivisorMake[aFinRows, aInfRows, basis]
+    schultzDivisorMake[
+      Map[schultzCanon, aFinRows, {2}],
+      aInfRows,
+      basis
+    ]
   ];
 
 (* multiplicationMatrix[fAF, basis, y]: n × n matrix M such that             *)
@@ -518,11 +611,11 @@ schultzDivisorMultiply[
     Table[
       Module[{psiIeta, psiJeta, psiIAF, psiJAF, prodAF, prodEta, rowOut},
         psiIeta = Table[
-          Together[d1["aInf"][[i, k]] / x^deltas[[k]]],
+          schultzCanon[d1["aInf"][[i, k]] / x^deltas[[k]]],
           {k, n}
         ];
         psiJeta = Table[
-          Together[d2["aInf"][[j, k]] / x^deltas[[k]]],
+          schultzCanon[d2["aInf"][[j, k]] / x^deltas[[k]]],
           {k, n}
         ];
         psiIAF = afMake[psiIeta, basis];
@@ -530,7 +623,7 @@ schultzDivisorMultiply[
         prodAF = afTimes[psiIAF, psiJAF, basis];
         prodEta = prodAF["Coeffs"];
         rowOut = Table[
-          Together[prodEta[[k]] * x^deltas[[k]]],
+          schultzCanon[prodEta[[k]] * x^deltas[[k]]],
           {k, n}
         ];
         rowOut

@@ -118,4 +118,31 @@ Module[{basis, integrandAF, b, result},
   ];
 ];
 
+(* ::Section:: *)
+(* Cubic-radical (n = 3) integrand with K(ζ_3)-valued residues.                 *)
+(*                                                                               *)
+(* ∫dx/(x·(x³+1)^(1/3)) is genus 1 with three finite residues {1, ζ_3, ζ_3²} at *)
+(* the three places over x = 0. Computing the per-residue Schultz divisor       *)
+(* requires the HNF / divisor-multiplication chain to canonicalize K(ζ_3)        *)
+(* coefficients — without RootReduce-aware canonicalisation these matrices      *)
+(* carry expressions whose textual form is nonzero but whose true value is 0/0, *)
+(* producing cascading 1/0 errors during HNF pivot selection. Regression for   *)
+(* the §10.1 / TragerPlan extension-aware HNF chain.                             *)
+
+tsection["schultzConstructLogTerms: cubic radical with ζ_3 residues"];
+
+Module[{integrand, expected},
+  integrand = 1/(x*(x^3 + 1)^(1/3));
+  expected = Trager`IntegrateTrager[integrand, x, "Schultz" -> True];
+  tassert["Schultz returns a non-Failure on the running cubic-radical case",
+    !MatchQ[expected, _Failure]];
+  tassert["Result contains Log terms",
+    !FreeQ[expected, Log]];
+  Module[{diff},
+    diff = Simplify @ Together[D[expected, x] - integrand];
+    tassertEqual["differentiating the result returns the integrand",
+      0, diff]
+  ]
+];
+
 tSummary[];
