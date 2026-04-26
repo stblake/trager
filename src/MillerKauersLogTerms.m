@@ -351,23 +351,67 @@ MillerKauersLogTerms[residues_List, remainderAF_?afElementQ, Dpoly_,
   rFactors = millerFactorRz[Rz, zInt];
   If[rFactors === {}, Throw[{}]];
 
-  (* Step 5: per-factor primary decomposition + multiplicity search. *)
+  (* Step 5: per-factor primary decomposition + multiplicity search.        *)
+  (* Strategy: try Miller's strict pseudocode first (per prime / per μ via  *)
+  (* h^μ candidate enumeration). If a prime exhausts without producing a    *)
+  (* generator, fall back to Kauers' iterated-squaring on the original     *)
+  (* block-elim GB scoped to {F, r_i} for the WHOLE factor. Kauers' search *)
+  (* tests `(F, r_i, p) === GB(G^k ∪ {F, r_i})` rather than the tighter    *)
+  (* `(F, r_i, p) === (F, r_i, h^μ)`, so it picks up compound generators   *)
+  (* (products that span (u − tv') powers) that Miller's strict h^μ pool  *)
+  (* misses on positive-genus integrands such as                             *)
+  (*   ∫dx / (x · (x²−3x+2)^(1/3))                                          *)
+  (* (genus-1, principal generator at μ = 6, not in any sum of GB elements). *)
   logTerms = {};
   Do[
-    Module[{ri = rFactor[[1]]},
+    Module[{ri = rFactor[[1]], factorTerms, fallback = False},
       primes = zeroDimPrimaryDecomposition[
         {F, vFull, u - zInt * vprime, ri}, {x, y, zInt}];
       If[tragerFailureQ[primes], Throw[primes]];
+
+      factorTerms = {};
       Do[
         contributions = millerMultiplicitySearch[
           prime, F, ri, zInt, {x, y, zInt}, maxTorsion, y, basis];
-        If[tragerFailureQ[contributions], Throw[contributions]];
-        logTerms = Join[logTerms, contributions],
+        If[tragerFailureQ[contributions],
+          fallback = True;
+          Break[]
+        ];
+        factorTerms = Join[factorTerms, contributions],
         {prime, primes}
-      ]
+      ];
+
+      If[fallback,
+        factorTerms = millerKauersFactorFallback[G, F, ri, zInt,
+                        {x, y, zInt}, maxTorsion];
+        If[tragerFailureQ[factorTerms], Throw[factorTerms]]
+      ];
+
+      logTerms = Join[logTerms, factorTerms]
     ],
     {rFactor, rFactors}
   ];
 
   logTerms
 ]];
+
+(* ::Section:: *)
+(* Per-factor Kauers fallback. Mirrors the per-factor body of              *)
+(* KauersLogTerms[] but takes the already-computed block-elim GB `G` and    *)
+(* the factor's ri. Returns the standard {{coeff, vArg}, …} list, or `{}`  *)
+(* if Kauers' iterated-squaring exhausts the bound (silently dropped — the *)
+(* pipeline's verifier surfaces any mismatch).                              *)
+
+ClearAll[millerKauersFactorFallback];
+millerKauersFactorFallback[G_List, F_, ri_, zInt_Symbol, vars_List,
+                           maxTorsion_Integer] := Module[
+  {p, kIter, roots},
+  {p, kIter} = kauersPrincipalPower[G, {F, ri}, vars, maxTorsion];
+  If[tragerFailureQ[p], Return[p]];
+  If[TrueQ[p === 1], Return[{}]];
+  roots = millerRootsOfUnivariate[ri, zInt];
+  Map[
+    Function[gamma, {Together[gamma / kIter], p /. zInt -> gamma}],
+    roots
+  ]
+];

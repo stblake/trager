@@ -78,6 +78,21 @@ verifyMK["(y+1)/((x^2+1)(x+1)), y^2 = x^2+1  [Miller Ex 10]",
   (y + 1)/((x^2 + 1)(x + 1)), y^2 == x^2 + 1];
 
 (* ::Section:: *)
+(* Tier 2b: positive-genus cases that exhaust Miller's strict pseudocode   *)
+(* but succeed via Kauers' iterated-squaring fallback. Regression for     *)
+(* "Miller is flimsy compared to Kauers" — every integrand handled by    *)
+(* Kauers must also work via the Miller method.                           *)
+
+tsection["MillerKauersLogTerms: Kauers-fallback positive-genus cases"];
+
+(* User-reported case: 1/(x · (x²−3x+2)^(1/3)) on the genus-1 curve       *)
+(* y³ = (x−1)(x−2). Principal generator at μ = 6 (elliptic torsion); the *)
+(* h^μ candidate enumeration alone never finds it. Kauers' iterated      *)
+(* squaring of the full block-elim GB picks it up.                        *)
+verifyMK["1/(x (x^2-3x+2)^(1/3)), y^3 = x^2-3x+2  [Miller-stalls case]",
+  1/(x*y), y^3 == x^2 - 3 x + 2];
+
+(* ::Section:: *)
 (* Tier 3: algebraic-only integrals (log part empty) still work            *)
 
 tsection["MillerKauersLogTerms: algebraic-only cases"];
