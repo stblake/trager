@@ -94,7 +94,18 @@ schultzHNFFinite[mat_List, x_Symbol] := Module[
     Map[Denominator, matT, {2}]
   ];
   commonDen = PolynomialLCM @@ Prepend[allDens, 1];
-  polyM = Map[canonicalizePolyEntry[# * commonDen, x, {}] &, matT, {2}];
+  (* `Cancel[Together[…]]` here (rather than the bare `Expand` baked into     *)
+  (* `canonicalizePolyEntry`'s pure-ℚ branch) is required because the input  *)
+  (* matrix can carry sign-flipped denominators — e.g. an entry of the form  *)
+  (* `(-2-x^3)^(-1)`, which Mathematica leaves un-normalised even after      *)
+  (* `Together`. Multiplying such an entry by `commonDen = -2-x^3` yields    *)
+  (* the literal pair `(-2-x^3)^(-1)·(-2-x^3)` which `Expand` happily        *)
+  (* expands but does NOT cancel — leaving a non-polynomial entry that the   *)
+  (* downstream `hermiteNormalFormOverKz` then divides 1/0 on. `Cancel`      *)
+  (* simplifies these constructed-polynomial entries to their actual         *)
+  (* polynomial form. Surfaces under Schultz n >= 3 inverse, where the       *)
+  (* Galois orbit collapse routinely produces such sign-flipped fractions.   *)
+  polyM = Map[Cancel[Together[# * commonDen]] &, matT, {2}];
   hnf = hermiteNormalFormOverKz[polyM, x, {}];
   (* HNF over k[x] of an m × n row-stack (m ≥ n) produces m rows, the last *)
   (* m − n of which are identically zero once the rank is n. For ideal    *)
@@ -582,41 +593,109 @@ ClearAll[schultzDivisorInverse];
 
 schultzDivisorInverse[f_Failure] := f;
 
+(* Apply σ^k to a matrix in η-coords: column j is multiplied by ζ_n^((j-1)·k). *)
+ClearAll[applySigmaPower];
+applySigmaPower[mat_List, k_Integer, n_Integer, zeta_] :=
+  Table[
+    Together[mat[[i, j]] * zeta^((j - 1) * k)],
+    {i, Length[mat]}, {j, n}
+  ];
+
+(* Galois-invariant collapse: an expression that is invariant under            *)
+(* ζ_n ↦ ζ_n^k for every k coprime to n must lie in K(x). After the orbit    *)
+(* product, every entry should reduce to a rational expression in K(x).        *)
+(*                                                                              *)
+(* Mathematica represents Exp[2 Pi I/3] internally as `(-1)^(2/3)` after        *)
+(* `Together`, and `Together[Expand[…]]` does NOT apply the cyclotomic         *)
+(* identity `((-1)^(2/3))^3 - 1 = 0`. ComplexExpand rewrites every such         *)
+(* fractional power into the explicit `a + b·I·√n` form, after which Together  *)
+(* recombines and the I·√n parts cancel under Galois-invariance.               *)
+(*                                                                              *)
+(* `Simplify` is applied as a final step because the downstream                 *)
+(* `schultzHNFInfinity` / `valInfinity` pipeline relies on `PolynomialQ` and  *)
+(* `Series[…, {x, Infinity, k}]`, both of which silently fail when the         *)
+(* coefficients still carry symbolic `(-1)^(k/n)` traces — the order spec     *)
+(* `k` becomes non-numeric and `Series::serlim` fires. Simplify reliably      *)
+(* drops residual ζ_n powers when the expression is Galois-invariant.          *)
+ClearAll[collapseGaloisInvariant];
+collapseGaloisInvariant[expr_] := Module[{step1, step2},
+  step1 = Cancel[Together[Expand[ComplexExpand[expr]]]];
+  If[FreeQ[step1, (-1)^_Rational | Sqrt[_] | _Complex], step1,
+    step2 = Quiet @ Simplify[step1];
+    If[FreeQ[step2, (-1)^_Rational | Sqrt[_]], step2, step1]
+  ]
+];
+
 schultzDivisorInverse[d_?schultzDivisorQ] := Module[
-  {basis, x, n, aFin, aInf, aFinInv, aInfInv, aFinHNF, aInfHNF, sigmaDiag,
-   detFin, detInf},
+  {basis, x, n, aFin, aInf, aFinInv, aInfInv, aFinHNF, aInfHNF,
+   sigmaDiag, detFin, detInf,
+   zeta, sigmaDiv, productDiv, k, productAFin, productAInf},
 
   basis = d["basis"];
   x = basis["x"]; n = basis["n"];
   aFin = d["aFin"]; aInf = d["aInf"];
 
-  If[n =!= 2,
-    Return[tragerFailure["ImplementationIncomplete",
-      "n"      -> n,
-      "Method" -> "Schultz",
-      "Reason" -> "schultzDivisorInverse currently supports only n = 2 \
-(simple radical with sqrt). For n >= 3 the inverse fractional ideal requires \
-the Galois orbit product I^{-1} = (1/N(I)) prod_{k=1}^{n-1} sigma^k(I), \
-which exits Q for n >= 3 and is not yet implemented."
-    ]]
+  (* `Cancel[Together[Det[…]]]` (rather than the bare `Det[…]`): the basis    *)
+  (* matrices can have entries with overlapping factors that `Det` does not   *)
+  (* automatically cancel. A non-canonical `detInf` like                       *)
+  (*   (2 x^2 + 3 x^5 + x^8) / (x^2 (1 + x^3))                                *)
+  (* whose simplified form is `2 + x^3` then propagates as an unsimplified    *)
+  (* divisor downstream and breaks the orbit-product collapse on the          *)
+  (* infinity side.                                                            *)
+  detFin = Cancel[Together[Det[aFin]]];
+  detInf = Cancel[Together[Det[aInf]]];
+
+  If[n === 2,
+    (* Fast path: ζ_2 = −1, σ negates the y-coefficient column. *)
+    sigmaDiag = DiagonalMatrix[{1, -1}];
+    aFinInv = Map[Together, aFin . sigmaDiag / detFin, {2}];
+    aInfInv = Map[Together, aInf . sigmaDiag / detInf, {2}];
+    aFinHNF = schultzHNFFinite[aFinInv, x];
+    aInfHNF = schultzHNFInfinity[aInfInv, x];
+    aInfHNF = If[Length[aInfHNF] > n, Take[aInfHNF, n], aInfHNF];
+    Return[<|
+      "Type"  -> "SchultzDivisor",
+      "aFin"  -> aFinHNF,
+      "aInf"  -> aInfHNF,
+      "basis" -> basis
+    |>]
   ];
 
-  (* σ negates the y-coefficient column. *)
-  sigmaDiag = DiagonalMatrix[{1, -1}];
+  (* General case: I^{−1} = (1/N(I)) · σ(I) · σ²(I) · … · σ^{n−1}(I).         *)
+  (* The Galois group of K(η)/K(x) is ⟨σ : y ↦ ζ_n y⟩, acting on η_j =       *)
+  (* y^{j−1}/d_{j−1} by σ(η_j) = ζ_n^{j−1}·η_j. Hence the basis matrix of     *)
+  (* σ^k(I) in η-coords is obtained from A by scaling column j by             *)
+  (* ζ_n^{(j−1)·k}. Repeated `schultzDivisorMultiply` then folds the σ^k(I)   *)
+  (* together; the result is Galois-invariant, so its entries collapse back   *)
+  (* to K(x) (modulo Mathematica's algebraic-number simplification cost).     *)
+  zeta = Exp[2 Pi I / n];
+  productDiv = <|
+    "Type"  -> "SchultzDivisor",
+    "aFin"  -> applySigmaPower[aFin, 1, n, zeta],
+    "aInf"  -> applySigmaPower[aInf, 1, n, zeta],
+    "basis" -> basis
+  |>;
+  Do[
+    sigmaDiv = <|
+      "Type"  -> "SchultzDivisor",
+      "aFin"  -> applySigmaPower[aFin, k, n, zeta],
+      "aInf"  -> applySigmaPower[aInf, k, n, zeta],
+      "basis" -> basis
+    |>;
+    productDiv = schultzDivisorMultiply[productDiv, sigmaDiv];
+    If[tragerFailureQ[productDiv], Return[productDiv]],
+    {k, 2, n - 1}
+  ];
 
-  detFin = Det[aFin];
-  detInf = Det[aInf];
+  productAFin = productDiv["aFin"];
+  productAInf = productDiv["aInf"];
 
-  (* aFin · σ_matrix / N(I) — basis of σ(I)/N(I) = I^{-1} in η-coords. *)
-  aFinInv = Map[Together, aFin . sigmaDiag / detFin, {2}];
-  aInfInv = Map[Together, aInf . sigmaDiag / detInf, {2}];
+  aFinInv = Map[collapseGaloisInvariant[# / detFin] &, productAFin, {2}];
+  aInfInv = Map[collapseGaloisInvariant[# / detInf] &, productAInf, {2}];
 
   aFinHNF = schultzHNFFinite[aFinInv, x];
   aInfHNF = schultzHNFInfinity[aInfInv, x];
-  aInfHNF = If[Length[aInfHNF] > basis["n"],
-    Take[aInfHNF, basis["n"]],
-    aInfHNF
-  ];
+  aInfHNF = If[Length[aInfHNF] > n, Take[aInfHNF, n], aInfHNF];
 
   <|
     "Type"  -> "SchultzDivisor",

@@ -274,6 +274,38 @@ Module[{basis, A, divA, result},
     False, First[result]];
 ];
 
+(* schultzDivisorInverse on cubic-radical extensions exercises the Galois     *)
+(* orbit-product construction: I^{-1} = (1/N(I)) ∏_{k=1}^{n-1} σ^k(I). The   *)
+(* result is principal-equivalent to div(1/f) for principal divisors div(f). *)
+(* On the user-reported case 1/(x*(x^3+1)^(1/3)) (genus-1 elliptic) the      *)
+(* inverse is needed when residue Q-basis decomposition produces negative   *)
+(* exponents.                                                                  *)
+
+tsection["SchultzDivisor: inverse for n = 3 (cubic radical)"];
+
+Module[{basis, prinD, oneOverY, directInv, orbitInv, prod},
+  basis = buildIntegralBasis[3, x^3 + 1, x];
+  prinD = schultzPrincipalDivisor[afFromStandard[1 + y, basis, y], basis, y];
+  orbitInv = schultzDivisorInverse[prinD];
+  tassert["inverse is a SchultzDivisor", schultzDivisorQ[orbitInv]];
+  (* aFin should match the direct principal divisor of 1/(1+y) =              *)
+  (* (1−y+y²)/(2+x³).                                                          *)
+  oneOverY = afFromStandard[(1 - y + y^2)/(2 + x^3), basis, y];
+  directInv = schultzPrincipalDivisor[oneOverY, basis, y];
+  tassertEqual["aFin matches direct principal-divisor of 1/(1+y)",
+    directInv["aFin"], orbitInv["aFin"]];
+  (* aInf is principal-equivalent (the orbit-product representation differs   *)
+  (* from the direct-principal representation by a unit ideal — both encode  *)
+  (* the same divisor class). The product D · D^{-1} confirms the identity   *)
+  (* holds in the divisor group: aFin collapses to the n×n identity, aInf is *)
+  (* principal-equivalent to the unit ideal.                                   *)
+  prod = schultzDivisorMultiply[prinD, orbitInv];
+  tassertEqual["D · D^{-1} aFin is the identity matrix",
+    IdentityMatrix[3], prod["aFin"]];
+  tassert["D · D^{-1} is principal (Sch §3.2 invariant)",
+    First[schultzDivisorPrincipalQ[prod]] === True];
+];
+
 tsection["SchultzDivisor: valInfinity helper"];
 
 tassertEqual["valInfinity(0) = Infinity", Infinity, valInfinity[0, x]];
