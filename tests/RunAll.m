@@ -14,8 +14,14 @@ $testFiles = {
   "TestArithmetic.m",
   "TestShift.m",
   "TestHermite.m",
+  "TestSchultzHermite.m",
+  "TestSchultzPlaces.m",
+  "TestSchultzResidues.m",
+  "TestSchultzFailStyle.m",
+  "TestSchultzLogTerms.m",
   "TestResidues.m",
   "TestDivisor.m",
+  "TestSchultzDivisor.m",
   "TestPrincipalGen.m",
   "TestTorsion.m",
   "TestIdealDecomposition.m",
@@ -26,7 +32,8 @@ $testFiles = {
   "TestGenusPositive.m",
   "TestRescale.m",
   "TestSurface.m",
-  "TestParameters.m"
+  "TestParameters.m",
+  "TestSchultzPipeline.m"
 };
 
 $overallExit = 0;

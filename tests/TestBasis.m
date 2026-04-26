@@ -106,4 +106,84 @@ Module[{b, d, n, i},
   ];
 ];
 
+(* ::Section:: *)
+(* Schultz 2015 infinity exponents δ_i (Sch §4, Lemma 4.1).                  *)
+(* See SchultzPlan.md §S.1. The sum rule δ_1 + … + δ_n = n + c(g − 1) is the *)
+(* defining identity we pin regression tests against.                         *)
+
+tsection["buildIntegralBasis: Schultz infinity exponents δ_i"];
+
+Module[{b},
+  b = buildIntegralBasis[2, x^2 + 1, x];
+  (* y^2 = x^2 + 1, g_curve = 0, c = 1, so δ-sum = 2 + 0 = 2. deg(g)=2,      *)
+  (* m̃ = 1, so ord_∞(y) = −1, i.e. at each ∞-place y behaves like x^1. So  *)
+  (* δ_0 = 0 (the constant 1 is integral at infinity),                       *)
+  (* δ_1 = ⌈2/2 − 0⌉ = 1 (y needs 1/x to be integral at infinity).          *)
+  tassertEqual["δ for y^2 = x^2+1 is {0, 1}", {0, 1}, b["deltas"]];
+  tassertEqual["c for y^2 = x^2+1 is 1", 1, b["c"]];
+  tassertEqual["δ-sum rule for y^2 = x^2+1 (genus 0)",
+    b["n"] + b["c"]*(0 - 1), Total[b["deltas"]]];
+];
+
+Module[{b},
+  b = buildIntegralBasis[2, x^3 + 1, x];
+  (* y^2 = x^3 + 1, elliptic (genus 1). ord_∞(y) = −3/gcd(2,3) · 1 = hmm    *)
+  (* with gcd(2,3) = 1, ñ = 2, m̃ = 3. ord_∞(y) = −3, ord_∞(x) = −2,        *)
+  (* so w_1 = y has scaled ord −3. Need δ_1 = ⌈3/2⌉ = 2.                   *)
+  tassertEqual["δ for y^2 = x^3+1 is {0, 2}", {0, 2}, b["deltas"]];
+  (* Sum rule: 0 + 2 = 2 = n + c(g−1) = 2 + (1−1) = 2.                      *)
+  tassertEqual["δ-sum rule for y^2 = x^3+1 (genus 1)",
+    b["n"] + b["c"]*(1 - 1), Total[b["deltas"]]];
+];
+
+Module[{b},
+  b = buildIntegralBasis[3, x, x];
+  (* y^3 = x, genus 0. n = 3, deg(g) = 1, gcd = 1. ñ = 3, m̃ = 1.           *)
+  (* δ_0 = 0, δ_1 = ⌈1/3⌉ = 1, δ_2 = ⌈2/3⌉ = 1. Sum = 2.                    *)
+  tassertEqual["δ for y^3 = x is {0, 1, 1}", {0, 1, 1}, b["deltas"]];
+  tassertEqual["δ-sum rule for y^3 = x (genus 0)",
+    b["n"] + b["c"]*(0 - 1), Total[b["deltas"]]];
+];
+
+Module[{b},
+  b = buildIntegralBasis[4, x^3, x];
+  (* y^4 = x^3, genus 0 (by computeGenus formula: 1 + (1/2)(1·(4−1)+(4−1)−8)  *)
+  (* = 1 − 1 = 0). n = 4, deg(g) = 3. d_i = x^⌊3i/4⌋ = {1, 1, x, x^2}.       *)
+  (* δ_0 = 0;                                                                  *)
+  (* δ_1 = ⌈3/4 − 0⌉ = 1;                                                    *)
+  (* δ_2 = ⌈6/4 − 1⌉ = 1;                                                    *)
+  (* δ_3 = ⌈9/4 − 2⌉ = 1.                                                    *)
+  (* Sum = 3 = 4 + (0 − 1). ✓                                                *)
+  tassertEqual["δ for y^4 = x^3 is {0, 1, 1, 1}", {0, 1, 1, 1}, b["deltas"]];
+  tassertEqual["δ-sum rule for y^4 = x^3 (genus 0)",
+    b["n"] + b["c"]*(0 - 1), Total[b["deltas"]]];
+];
+
+Module[{b, gen},
+  (* y^5 = x^2(x−1)^3(x+2)^4 -- multi-factor sanity check.                   *)
+  b = buildIntegralBasis[5, x^2 (x - 1)^3 (x + 2)^4, x];
+  (* All δ_i ≥ 0. *)
+  tassert["all δ_i ≥ 0", AllTrue[b["deltas"], # >= 0 &]];
+  (* Each δ_i is an integer. *)
+  tassert["all δ_i integer", AllTrue[b["deltas"], IntegerQ]];
+  (* Sum rule: with c = 1, sum = n + (g − 1). *)
+  (* deg g = 9; using computeGenus (reduceIrreducibility will leave this   *)
+  (* as-is because exponents mod n are 2,3,4 and gcd(5,2,3,4) = 1):         *)
+  (* genus = 1 + (1/2)(1·(5-1) + 1·(5-1) + 1·(5-1) + (5 - gcd(5,9)) − 2·5) *)
+  (*       = 1 + (1/2)(4 + 4 + 4 + 4 − 10) = 1 + 3 = 4.                    *)
+  gen = computeGenus[5, x^2 (x - 1)^3 (x + 2)^4, x];
+  tassertEqual["δ-sum rule for y^5 multi-factor",
+    b["n"] + b["c"]*(gen - 1), Total[b["deltas"]]];
+];
+
+Module[{b, gen, gExpr},
+  (* Tier 1b elliptic: y^2 = x^3 + p x -- just shape, not integrated here.   *)
+  (* Base field Q with no parameters, genus 1, δ-sum must be 2.              *)
+  gExpr = x^3 + x;
+  b = buildIntegralBasis[2, gExpr, x];
+  gen = computeGenus[2, gExpr, x];
+  tassertEqual["δ-sum rule for y^2 = x^3 + x (genus 1)",
+    b["n"] + b["c"]*(gen - 1), Total[b["deltas"]]];
+];
+
 tSummary[];

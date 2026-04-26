@@ -59,6 +59,16 @@ Options[IntegrateTrager] = {
   "MaxGenus"        -> Infinity,  (* Infinity: permissive (genus gate off). *)
                                   (* 0: strict genus-0 only.                 *)
                                   (* >= g: attempt genus <= g inputs.         *)
+  "Schultz"         -> False,     (* Route through the Schultz 2015 variant  *)
+                                  (* (SchultzPlan.md): drop-in replacement   *)
+                                  (* for Phase 2-6, using the eta-basis with *)
+                                  (* infinity exponents (S.1), the double-   *)
+                                  (* ideal divisor representation (S.2),     *)
+                                  (* the infinity-aware Hermite reduction    *)
+                                  (* (S.3), the norm-resultant residues      *)
+                                  (* (S.4-S.5), and the principal-generator  *)
+                                  (* + fail-in-style log terms (S.6).        *)
+                                  (* When True, "LogTermsMethod" is ignored. *)
   "Verify"          -> False,     (* Opt-in step-10 derivative-vs-integrand  *)
                                   (* check. Default False: return Phase-6    *)
                                   (* output as-is. When True, differentiate  *)
@@ -88,12 +98,21 @@ Options[IntegrateTrager] = {
                                   (* K[z]-HNF over Q(a)[z] blows up.          *)
                                   (* "MillerKauers" alias accepted for back- *)
                                   (* compat; canonical name is "Miller".     *)
-  "Parameters"      -> Automatic  (* List of free symbols to treat as       *)
+  "Parameters"      -> Automatic, (* List of free symbols to treat as       *)
                                   (* transcendental parameters: the base    *)
                                   (* field becomes ℚ(params) instead of ℚ. *)
                                   (* Automatic = auto-detect every free     *)
                                   (* symbol in (integrand, relation) other  *)
                                   (* than x and y. Pass {} to force ℚ-only. *)
+  "MaxTorsionOrder" -> 12         (* Bound on torsion search for divisors    *)
+                                  (* on positive-genus curves (Sch §3.2 /    *)
+                                  (* §S.6.1, TragerPlan.md §10.2). For the   *)
+                                  (* default Mazur-bound = 12 fits elliptic  *)
+                                  (* (genus-1) cases. Higher genera and the  *)
+                                  (* Schultz-paper showcase example need     *)
+                                  (* larger values (e.g. 30 for the          *)
+                                  (* `(29x²+18x-3)/√(x⁶+...)` integral whose *)
+                                  (* torsion order is 29).                    *)
 };
 
 (* Auto-detect parameters: every Symbol in (integrand, relation) that is    *)
@@ -242,9 +261,11 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
     simplifyOpt   = TrueQ[OptionValue["Simplify"]],
     shiftBoundOpt = OptionValue["ShiftBound"],
     maxGenusOpt   = OptionValue["MaxGenus"],
+    schultzOpt    = TrueQ[OptionValue["Schultz"]],
     verifyOpt     = TrueQ[OptionValue["Verify"]],
     logMethodOpt  = OptionValue["LogTermsMethod"],
     paramsOpt     = OptionValue["Parameters"],
+    maxTorsionOpt = OptionValue["MaxTorsionOrder"],
     paramsResolved,
     logTermsFn,
     validated, reduced, genus, basis,
@@ -269,13 +290,20 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
   (* every signature would touch every file with no algorithmic benefit.    *)
   Block[{$tragerParameters = paramsResolved},
 
-  logTermsFn = Switch[logMethodOpt,
-    "Trager",                          constructLogTerms,
-    "Miller" | "MillerKauers",         MillerKauersLogTerms,
-    "Kauers",                          KauersLogTerms,
-    _, Throw[tragerFailure["BadInput",
-      "Reason" -> "\"LogTermsMethod\" must be \"Auto\", \"Trager\", \"Miller\", or \"Kauers\"",
-      "Value"  -> logMethodOpt]]
+  (* "LogTermsMethod" is ignored under "Schultz" -> True (Schultz supplies   *)
+  (* its own residue + log-term construction via §S.6.1). We still validate  *)
+  (* the option only on the default path, so an invalid LogTermsMethod still*)
+  (* surfaces as BadInput in the common case.                                *)
+  If[!schultzOpt,
+    logTermsFn = Switch[logMethodOpt,
+      "Trager",                          constructLogTerms,
+      "Miller" | "MillerKauers",         MillerKauersLogTerms,
+      "Kauers",                          KauersLogTerms,
+      _, Throw[tragerFailure["BadInput",
+        "Reason" -> "\"LogTermsMethod\" must be \"Auto\", \"Trager\", \"Miller\", or \"Kauers\"",
+        "Value"  -> logMethodOpt]]
+    ],
+    logTermsFn = Null
   ];
 
   diagnostics = <||>;
@@ -319,6 +347,23 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
   (* Step 4: buildIntegralBasis *)
   basis = buildIntegralBasis[reduced["n"], reduced["g"], x];
   AssociateTo[diagnostics, "basis" -> basis];
+
+  If[schultzOpt,
+    (* === Schultz pipeline (SchultzPlan.md §S.7) =========================== *)
+    (* Drop-in replacement for Phases 2-6: the SchultzPipeline driver runs   *)
+    (* the infinity-aware Hermite reduction, the eq. 4.10 / 4.11 residues   *)
+    (* and the §S.6 principal-generator + fail-in-style log-term path, and  *)
+    (* delegates to the same `reassemble` Phase 6 used by the default path. *)
+    Module[{spr},
+      spr = schultzPipeline[validated, reduced, basis, x, y, simplifyOpt,
+                            maxTorsionOpt];
+      If[tragerFailureQ[spr], Throw[spr]];
+      AssociateTo[diagnostics, "schultz" -> spr["diagnostics"]];
+      final = spr["final"];
+      AssociateTo[diagnostics, "final"        -> final];
+      AssociateTo[diagnostics, "reducedFrame" -> spr["reducedFrame"]];
+    ],
+    (* === Default pipeline (Phases 2-6 unchanged) ========================== *)
 
   (* Steps 5 + 6: Hermite-first strategy (per TragerPlan.md §12).           *)
   (* If the integrand's form f·dx is already regular at every infinity      *)
@@ -366,6 +411,44 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
     logTerms = {},
     residueRes = guard[computeResidues[hermRes["remainder"], hermRes["D"],
                                         basisShifted, y, zResLoc]];
+    (* Liouville structural check (Trager Ch 5 §4, Ch 6 §3). After Hermite *)
+    (* the remainder ω has square-free denominator, so its only poles are *)
+    (* simple. If computeResidues returns no residues, every such pole has*)
+    (* zero residue and lies above a branch place — i.e. the form is      *)
+    (* regular at every place on the lifted Riemann surface. That makes  *)
+    (* ω a holomorphic (first-kind) differential. Genus 0 admits no non- *)
+    (* zero holomorphic differentials (H^0(C, Ω^1) = 0), so this state   *)
+    (* on genus 0 is an internal bug; for genus ≥ 1 the integrand is     *)
+    (* non-elementary by Liouville since first-kind differentials carry  *)
+    (* no log component and are exact only when zero.                    *)
+    If[residueRes["residues"] === {},
+      Module[{remainderStd},
+        remainderStd = afToStandard[hermRes["remainder"], basisShifted, y];
+        Which[
+          genus === 0,
+            Throw[incompleteFailure["Phase4ResiduesEmptyOnGenus0",
+              "Reason"    -> "computeResidues returned no residues but the \
+Hermite remainder is non-zero. Genus 0 admits no non-zero holomorphic \
+differentials, so this indicates a missed pole during the Z^k strip in \
+computeResidues, or a Hermite reduction defect.",
+              "Remainder" -> remainderStd,
+              "D"         -> hermRes["D"],
+              "n"         -> reduced["n"],
+              "g"         -> reduced["g"]]],
+          True,
+            Throw[tragerFailure["NonElementary",
+              "Genus"     -> genus,
+              "n"         -> reduced["n"],
+              "g"         -> reduced["g"],
+              "Reason"    -> "Hermite remainder is a non-zero first-kind \
+differential on a positive-genus curve; no elementary antiderivative exists \
+(Liouville).",
+              "AttemptedAntiderivative" ->
+                afToStandard[hermRes["algPart"], basisShifted, y],
+              "Remainder" -> remainderStd]]
+        ]
+      ]
+    ];
     logTerms = guard[logTermsFn[residueRes["residues"], hermRes["remainder"],
                                   hermRes["D"], basisShifted, y,
                                   Multiplicities -> residueRes["multiplicities"],
@@ -384,7 +467,8 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
     final = ra["result"];
     AssociateTo[diagnostics, "final" -> final];
     AssociateTo[diagnostics, "reducedFrame" -> ra["reducedFrame"]];
-  ];
+  ]
+  ];  (* end If[schultzOpt, ..., default-branch] *)
 
   (* Step 10: OPT-IN verification of the antiderivative (see "Verify" option).*)
   (* Differentiate the proposed result and compare to the original integrand*)
