@@ -88,4 +88,18 @@ Module[{basis, result},
     {2}, Keys[result["finite"]]];
 ];
 
+(* When b has a root not shared with g, ramification 1 must be probed         *)
+(* explicitly even if no factor of g induces a ramification-1 place. The     *)
+(* user-reported pipeline failure on ∫(x−1)/((x+1)√(x³+x)) traced to this    *)
+(* gap: x = −1 is a non-branch place (g(−1) = −2 ≠ 0) and its residue was   *)
+(* dropped, producing a spurious NonElementary verdict.                       *)
+
+Module[{basis, result, b},
+  basis = buildIntegralBasis[2, x^3 + x, x];
+  b = x*(x + 1)*(x^2 + 1);   (* roots: 0, −1, ±i; g(−1) ≠ 0, so ram-1 needed *)
+  result = schultzResidues[{0, x - 1}, b, basis, zz];
+  tassert["finite key set includes ramification 1 when b has a non-branch root",
+    MemberQ[Keys[result["finite"]], 1]];
+];
+
 tSummary[];

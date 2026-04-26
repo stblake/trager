@@ -264,30 +264,50 @@ residueValuesFromPoly[poly_, z_Symbol] := Module[{p, stripped, factors, roots},
 
 ClearAll[schultzResidues];
 schultzResidues[Acoeffs_List, b_, basis_?basisDescriptorQ, z_Symbol] :=
-  Module[{dmap, finiteResidues, infinityResidues, ells,
-          polyFin, polyInf, dForR},
+  Module[{dmap, finiteResidues, infinityResidues, finiteEll, infinityEll,
+          polyFin, polyInf, dForR, infinityRam, finiteHasOne},
     dmap = schultzDlDivisorMap[basis];
-    ells = Keys[dmap];
+
     (* Sch §4.4 page 14: for the eq. 4.10 finite residue formula, ramification *)
     (* index r = 1 needs the b-aware (D_1[b])^∞ instead of the curve-only D_1   *)
     (* (which would be infinite-support and meaningless). For r ≥ 2, D_r is   *)
     (* curve-invariant and finite, so we use dmap[r] directly.                  *)
+    (*                                                                            *)
+    (* Ramification 1 must be probed on the FINITE side whenever b has a root  *)
+    (* not shared with g — i.e. a finite non-branch place at which the         *)
+    (* integrand has a pole. Such places have ramification 1 by definition,    *)
+    (* regardless of whether any irreducible factor of g induces a              *)
+    (* ramification-1 contribution to the curve's structure. Without this,    *)
+    (* e.g. ∫(x−1)/((x+1)·√(x³+x)) dx loses the residue at x = −1, and the     *)
+    (* pipeline reports `NonElementary` for an elementary integral.             *)
+    finiteHasOne = MemberQ[Keys[dmap], 1] ||
+      (Exponent[b, basis["x"]] >= 1 &&
+        Exponent[Cancel[b / PolynomialGCD[b, basis["g"]]], basis["x"]] >= 1);
+    finiteEll = If[finiteHasOne,
+                   Sort[DeleteDuplicates[Append[Keys[dmap], 1]]],
+                   Sort[Keys[dmap]]];
+
+    (* Infinity side keys come from the curve only — there is no analogue of    *)
+    (* the "non-branch finite root of b" forcing ramification 1.                *)
+    infinityEll = Sort[Keys[dmap]];
+
     dForR = Function[r,
       If[r === 1, schultzD1ForB[b, basis], dmap[r]]
     ];
+
     finiteResidues = AssociationMap[
       Function[r,
         polyFin = schultzResidueFinitePoly[Acoeffs, b, r, dForR[r], basis, z];
         residueValuesFromPoly[polyFin, z]
       ],
-      ells
+      finiteEll
     ];
     infinityResidues = AssociationMap[
       Function[r,
         polyInf = schultzResidueInfinityPoly[Acoeffs, b, r, dmap[r], basis, z];
         residueValuesFromPoly[polyInf, z]
       ],
-      ells
+      infinityEll
     ];
     <|"finite" -> finiteResidues, "infinity" -> infinityResidues|>
   ];

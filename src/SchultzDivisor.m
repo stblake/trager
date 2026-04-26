@@ -465,6 +465,16 @@ schultzDivisorInversePrincipal[
 (* schultzPrincipalGenerator on c · Δ_j.                                        *)
 
 ClearAll[schultzDivisorMultiply];
+
+(* Failure-passthrough: divisor ops may receive a Failure from a deferred  *)
+(* path (e.g. schultzDivisorInverse for n >= 3). Without this rule, the    *)
+(* `?schultzDivisorQ` predicate rejects the Failure but the symbol stays   *)
+(* unevaluated, and downstream code (afMake, afTimes) then divides by zero *)
+(* on the Failure's record fields, producing $Aborted instead of a clean   *)
+(* Failure return.                                                          *)
+schultzDivisorMultiply[f_Failure, _] := f;
+schultzDivisorMultiply[_, f_Failure] := f;
+
 schultzDivisorMultiply[
   d1_?schultzDivisorQ, d2_?schultzDivisorQ
 ] := Module[
@@ -569,6 +579,9 @@ schultzDivisorMultiply[
 (* (e.g. principal (1+y) on y²=x²+1) and disagree on residue-divisor inverses. *)
 
 ClearAll[schultzDivisorInverse];
+
+schultzDivisorInverse[f_Failure] := f;
+
 schultzDivisorInverse[d_?schultzDivisorQ] := Module[
   {basis, x, n, aFin, aInf, aFinInv, aInfInv, aFinHNF, aInfHNF, sigmaDiag,
    detFin, detInf},
@@ -622,6 +635,9 @@ which exits Q for n >= 3 and is not yet implemented."
 (*   k < 0:  schultzDivisorInverse[D^{|k|}].                                    *)
 
 ClearAll[schultzDivisorPower];
+
+schultzDivisorPower[f_Failure, _] := f;
+
 schultzDivisorPower[d_?schultzDivisorQ, k_Integer] := Which[
   k === 0, schultzDivisorTrivial[d["basis"]],
   k === 1, d,

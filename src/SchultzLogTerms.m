@@ -120,7 +120,7 @@ schultzResiduesUnified[Acoeffs_List, b_, basis_?basisDescriptorQ,
 ClearAll[combineDivisorsByExponents];
 combineDivisorsByExponents[
   divisors_List, exponents_List, basis_?basisDescriptorQ
-] := Module[{nonZero, scaled, result},
+] := Module[{nonZero, scaled, scaledFailure, result},
   nonZero = Pick[
     Transpose[{divisors, exponents}],
     Map[# =!= 0 &, exponents]
@@ -132,8 +132,14 @@ combineDivisorsByExponents[
     schultzDivisorPower[#[[1]], #[[2]]] &,
     nonZero
   ];
+  (* Propagate the first Failure encountered while raising divisors to    *)
+  (* their integer powers — typically a deferred schultzDivisorInverse    *)
+  (* for n >= 3.                                                            *)
+  scaledFailure = SelectFirst[scaled, tragerFailureQ, None];
+  If[scaledFailure =!= None, Return[scaledFailure]];
   result = First[scaled];
   Do[result = schultzDivisorMultiply[result, sd], {sd, Rest[scaled]}];
+  If[tragerFailureQ[result], Return[result]];
   result
 ];
 
