@@ -40,9 +40,10 @@
 
 ClearAll[principalFinIdealMatrix];
 principalFinIdealMatrix[fAF_?afElementQ, basis_?basisDescriptorQ, y_Symbol] :=
-  Module[{Mf},
+  Module[{x, Mf},
+    x = basis["x"];
     Mf = multiplicationMatrix[fAF, basis, y];
-    Map[schultzCanon, Transpose[Mf], {2}]
+    Map[schultzCanon[#, x] &, Transpose[Mf], {2}]
   ];
 
 (* Helper: build the "principal ideal F · O_∞" matrix in (η · x^{-δ})-coords. *)
@@ -58,7 +59,7 @@ principalInfIdealMatrix[fAF_?afElementQ, basis_?basisDescriptorQ, y_Symbol] :=
     x = basis["x"];
     Mf = multiplicationMatrix[fAF, basis, y];
     Table[
-      schultzCanon[Mf[[j, i]] * x^(deltas[[j]] - deltas[[i]])],
+      schultzCanon[Mf[[j, i]] * x^(deltas[[j]] - deltas[[i]]), x],
       {i, n}, {j, n}
     ]
   ];
@@ -172,8 +173,8 @@ schultzResidueDivisor[
   (* on division, derailing the Schultz HNF pivot loop.                          *)
   FAF = afMake[
     Prepend[
-      Map[schultzCanon[-ell * #] &, Rest[Acoeffs]],
-      schultzCanon[bPrime * z0 - ell * Acoeffs[[1]]]
+      Map[schultzCanon[-ell * #, x] &, Rest[Acoeffs]],
+      schultzCanon[bPrime * z0 - ell * Acoeffs[[1]], x]
     ],
     basis
   ];
@@ -184,8 +185,8 @@ schultzResidueDivisor[
   (*            G_j = (ℓ x a_j)/x^{deg b}  for j ≥ 2.                            *)
   GAF = afMake[
     Prepend[
-      Map[schultzCanon[(ell * x * #) / x^degB] &, Rest[Acoeffs]],
-      schultzCanon[(b * z0 + ell * x * Acoeffs[[1]]) / x^degB]
+      Map[schultzCanon[(ell * x * #) / x^degB, x] &, Rest[Acoeffs]],
+      schultzCanon[(b * z0 + ell * x * Acoeffs[[1]]) / x^degB, x]
     ],
     basis
   ];

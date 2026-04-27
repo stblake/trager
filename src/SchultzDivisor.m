@@ -50,35 +50,38 @@
 (* Algebraic-extension canonicalization helper.                                *)
 (*                                                                              *)
 (* The Schultz HNF chain consumes matrices whose entries can carry algebraic-  *)
-(* number coefficients (e.g. ζ_n cube roots of unity from Phase-4 residues, or *)
-(* I·√3 traces from the Galois orbit collapse on n ≥ 3 inverses). On such      *)
-(* inputs `Together` and `Cancel` alone are insufficient — Mathematica leaves  *)
-(* expressions like                                                             *)
-(*    4 / (3 (4/3 + (4 I)/3 / (-I + √3) - 4/(√3 (-I + √3))))                   *)
-(* in unsimplified form, even though this denominator is identically 0 (it    *)
-(* drops out to ComplexInfinity under RootReduce). HNF pivot selection then    *)
-(* picks an entry that is "expression-nonzero" but real-zero, divides, and    *)
-(* generates the cascading 1/0 / ComplexInfinity errors visible to the user.   *)
+(* number coefficients — ζ_n cube roots of unity from Phase-4 residues, I·√3   *)
+(* traces from the Galois orbit collapse on n ≥ 3 inverses, and combinations  *)
+(* thereof. The canonicalizer must                                              *)
+(*   (i)  keep entries in a compact "Sqrt + I" radical form (do NOT collapse  *)
+(*        into `Root[…]` shape — that minimal-polynomial form is canonical    *)
+(*        over ℚ but not over ℚ(α) where α is the residue-field generator,   *)
+(*        and forces downstream HNF arithmetic to mix incompatible Root[]     *)
+(*        representations of the same algebraic number, e.g. `Sqrt[3] +       *)
+(*        Root[Z^4 + 12 Z^2 + 144, 1, 0]` is `−3 I` but the Cancel/Together   *)
+(*        engine cannot see it),                                                *)
+(*   (ii) recognise algebraic zeros so that pivot selection in the HNF        *)
+(*        doesn't divide by an "expression-nonzero, value-zero" entry. Zero  *)
+(*        recognition is handled separately by `zeroQ` (Common.m §"Robust    *)
+(*        zero-test") and by `trueDegreeAndLead` (this file) — both consult   *)
+(*        `RootReduce` exactly when it matters, so the canonicalizer itself  *)
+(*        does not need to.                                                    *)
 (*                                                                              *)
-(* schultzCanon[expr] is the universal canonicalizer for entries flowing       *)
-(* through the Schultz HNF / divisor pipeline:                                 *)
-(*   - On expressions free of algebraic-number heads (no Sqrt, no Power[_, _   *)
-(*     Rational] for non-trivial denominators, no Complex), it reduces to      *)
-(*     `Cancel[Together[…]]` — exactly the previous behaviour.                  *)
-(*   - On expressions that contain such heads, it pushes through               *)
-(*     `RootReduce[Together[…]]`, which canonicalizes algebraic identities     *)
-(*     (e.g. ((1+I√3)/2)^3 = 1) and reduces fractions like the above example  *)
-(*     to their genuine simplified form.                                        *)
+(* This is the §10.1 "thread Extension through the HNF pipeline" approach    *)
+(* from TragerPlan.md, applied to the Schultz code path. Rather than          *)
+(* signature-changing every helper to take an explicit `ext` parameter, we    *)
+(* keep entries in their natural radical form throughout HNF and rely on     *)
+(* targeted `RootReduce` checks (in `zeroQ`, `trueDegreeAndLead`) to surface *)
+(* algebraic-zero identities at exactly the points where they matter.         *)
 (*                                                                              *)
-(* RootReduce is robust but ~10-100× slower than Cancel/Together; the          *)
-(* algebraic-content guard ensures we only pay that cost when actually needed. *)
-(* Symbol heads from $tragerParameters are NOT treated as algebraic — they    *)
-(* are transcendental over ℚ and `Cancel[Together[…]]` is the right tool.      *)
-(*                                                                              *)
-(* This is the §10.1 "thread Extension through the HNF pipeline" plan from     *)
-(* TragerPlan.md, applied to the Schultz code path. The auto-detect form       *)
-(* avoids signature-changing every helper; the ext is implicit in the          *)
-(* expression itself.                                                           *)
+(* The earlier implementation that pushed every entry through `RootReduce`   *)
+(* canonicalized into ℚ-minimal-polynomial Root[] form — correct but the     *)
+(* resulting opaque atoms made `Cancel`/`Together` blind to obvious           *)
+(* combinations like `(I + √3) − Root[Z^4 − 4 Z^2 + 16, 4, 0] = 0` (both     *)
+(* sides equal `√3 + I` but in different representations), inducing          *)
+(* expression blow-up in `schultzDivisorMultiply` of n=3 residue divisors.    *)
+(* The current radical-preserving canonicalizer keeps the cubic-radical      *)
+(* torsion search ~5–10× faster on cube-root inputs.                          *)
 
 ClearAll[schultzAlgebraicQ];
 schultzAlgebraicQ[expr_] :=
@@ -88,9 +91,52 @@ schultzAlgebraicQ[expr_] :=
       _Complex | _Root | _AlgebraicNumber
   ];
 
+(* canonicalizeAlgebraicConstant — RootReduce-canonicalize a constant.        *)
+(*                                                                              *)
+(* Algebraic-number constants such as `(-2 I)/(-I + √3)` simplify to the      *)
+(* compact `(1 - I √3)/2` only after `RootReduce`. `Together`/`Cancel` alone *)
+(* leave them in their division form, and matrices full of those expressions  *)
+(* expand to enormous intermediate forms in subsequent HNF arithmetic. We     *)
+(* always apply RootReduce on constants — the cost is small and the           *)
+(* downstream savings are large.                                                *)
+(*                                                                              *)
+(* Crucially we do NOT apply RootReduce to rational expressions in x: doing   *)
+(* so collapses sums like `Sqrt[3] + I` into Q-minimal-polynomial Root[]      *)
+(* form, which downstream `Cancel`/`Together` then cannot recombine with     *)
+(* other Sqrt[]/I-form atoms (see the `Sqrt[3] + Root[Z^4 + 12 Z^2 + 144,    *)
+(* 1, 0] = -3 I` example in the file header). The rule: canonicalize the      *)
+(* coefficient ring (algebraic constants) but leave the polynomial structure  *)
+(* in radical form.                                                            *)
+ClearAll[canonicalizeAlgebraicConstant];
+canonicalizeAlgebraicConstant[c_] := If[
+  schultzAlgebraicQ[c],
+  Quiet @ RootReduce[c],
+  c
+];
+
 ClearAll[schultzCanon];
-schultzCanon[expr_] := Module[{t = Cancel[Together[expr]]},
-  If[schultzAlgebraicQ[t], RootReduce[t], t]
+
+(* schultzCanon[expr]: legacy single-argument form. Falls back to            *)
+(* `Cancel[Together[…]]` and trusts downstream `zeroQ` / `trueDegreeAndLead` *)
+(* to surface algebraic-zero identities. Polynomial-in-x structure is kept   *)
+(* in radical form (no Root[] mangling) — see the file header for why.       *)
+schultzCanon[expr_] := Cancel[Together[expr]];
+
+(* schultzCanon[expr, x]: variable-aware form. When the expression is a      *)
+(* constant in x, push through `RootReduce` so e.g. `(-2 I)/(-I + √3)`      *)
+(* collapses to `(1 - I √3)/2` (compact algebraic-number form). When the    *)
+(* expression depends on x, the polynomial structure is preserved verbatim  *)
+(* and downstream `zeroQ` / `trueDegreeAndLead` handle algebraic-zero       *)
+(* identities at exactly the points where they matter. Per-coefficient      *)
+(* `RootReduce` is intentionally NOT applied to whole polynomials in x — it *)
+(* doubles-to-quadruples the per-step cost without changing correctness    *)
+(* (the HNF arithmetic operates over `K(x)` regardless of representative).  *)
+schultzCanon[expr_, x_Symbol] := Module[{t = Cancel[Together[expr]]},
+  If[t === 0, Return[0]];
+  If[FreeQ[t, x],
+    canonicalizeAlgebraicConstant[t],
+    t
+  ]
 ];
 
 (* ::Section:: *)
@@ -136,7 +182,7 @@ schultzHNFFinite[mat_List, x_Symbol] := Module[
   (* ideals. Per-row denominator clearing (an earlier attempt) would alter *)
   (* the determinant by a product of row-scalings, corrupting the divisor   *)
   (* degree — the failing `div(f·g) degree = 0` test caught this.            *)
-  matT = Map[schultzCanon, mat, {2}];
+  matT = Map[schultzCanon[#, x] &, mat, {2}];
   allDens = DeleteDuplicates @ Flatten[
     Map[Denominator, matT, {2}]
   ];
@@ -173,7 +219,7 @@ schultzHNFFinite[mat_List, x_Symbol] := Module[
   (* leave Galois-cancellation artefacts; `schultzCanon` falls through to    *)
   (* `RootReduce` so identically-zero entries are recognised as zero before  *)
   (* HNF pivot selection picks them by mistake.                              *)
-  polyM = Map[schultzCanon[# * commonDen] &, matT, {2}];
+  polyM = Map[schultzCanon[# * commonDen, x] &, matT, {2}];
   (* Detect algebraic-extension generators in the polynomial matrix so that  *)
   (* `hermiteNormalFormOverKz`'s polynomial extended-GCD operates over       *)
   (* ℚ(α)[x] rather than treating α as a formal symbolic parameter. Without *)
@@ -191,11 +237,60 @@ schultzHNFFinite[mat_List, x_Symbol] := Module[
   If[Length[trimmed] >= nCols,
     trimmed = Take[trimmed, nCols]
   ];
-  Map[schultzCanon[#/commonDen] &, trimmed, {2}]
+  Map[schultzCanon[#/commonDen, x] &, trimmed, {2}]
 ];
 
 (* ::Section:: *)
 (* Infinity valuation / degree helpers                                        *)
+
+(* trueDegreeAndLead[poly, x] -> {deg, leadCoeff}.                            *)
+(*                                                                             *)
+(* Returns the true x-degree of `poly` viewed as a polynomial in x with       *)
+(* algebraic-number coefficients, and the leading coefficient at that degree. *)
+(* Skips leading coefficients that are algebraically zero but expression-     *)
+(* nonzero — e.g. `Sqrt[3] + Root[Z^4 + 12 Z^2 + 144, 1, 0]` evaluates to     *)
+(* `-3 I` under `RootReduce`, so the term `(3 I + Sqrt[3] + Root[…])·x^3`     *)
+(* is identically zero even though `Exponent[…, x]` reports degree 3. Without *)
+(* this canonicalisation the HNF pivot selection picks an entry whose         *)
+(* "leading" is a hidden zero, the leading coefficient evaluates to 0 via     *)
+(* `Limit`, and downstream division by `pivotCoeff = 0` cascades into         *)
+(* `Indeterminate` / `ComplexInfinity` matrix entries.                          *)
+(*                                                                             *)
+(* The `zeroQ` test on each candidate leading coefficient consults            *)
+(* `RootReduce` exactly (see Common.m §"Robust zero-test"), so the true       *)
+(* degree is decided by algebraic identity, not by surface form.              *)
+ClearAll[trueDegreeAndLead];
+trueDegreeAndLead[poly_, x_Symbol] := If[!PolynomialQ[poly, x],
+  {0, poly},
+  Module[{deg = Exponent[poly, x], coef, isZero},
+    coef = Coefficient[poly, x, deg];
+    (* Drop leading coefficients that are zero. Two layers:                 *)
+    (*   1. literal `0` (the polynomial may sandwich zero coefficients      *)
+    (*      between surviving higher / lower terms),                        *)
+    (*   2. for SUMs containing algebraic atoms (Sqrt, Root, AlgebraicNumber*)
+    (*      heads), `zeroQ` → `RootReduce`-canonical zero test. This is    *)
+    (*      exactly the Sch-pipeline case where `3 I + Sqrt[3] +           *)
+    (*      Root[Z^4 + 12 Z^2 + 144, 1, 0]` algebraically equals `0` but   *)
+    (*      `Together`/`Cancel` doesn't see it.                             *)
+    (* Single-atom leading coefficients (`Sqrt[3]`, `(-1 + I Sqrt[3])/2`,   *)
+    (* `Root[…]`) are nonzero by inspection — no RootReduce trip needed.   *)
+    (* `PossibleZeroQ` is intentionally NOT used: on Sqrt+Root mixes it     *)
+    (* returns `True` with a `ztest1::ztest1` warning even when the         *)
+    (* expression is genuinely nonzero, which would silently drop real     *)
+    (* leading coefficients.                                                 *)
+    While[deg > 0,
+      isZero = Which[
+        coef === 0, True,
+        Head[coef] === Plus && schultzAlgebraicQ[coef], zeroQ[coef],
+        True, False
+      ];
+      If[!isZero, Break[]];
+      deg--;
+      coef = Coefficient[poly, x, deg]
+    ];
+    {deg, coef}
+  ]
+];
 
 (* valInfinity[f, x] = v_∞(f). A rational function f = p/q ∈ k(x) has        *)
 (* v_∞(f) = deg(q) − deg(p). Our valuation conventions:                      *)
@@ -206,16 +301,17 @@ schultzHNFFinite[mat_List, x_Symbol] := Module[
 
 ClearAll[valInfinity];
 valInfinity[f_, x_Symbol] := Module[{ft, num, den, dN, dD},
-  (* `schultzCanon` first: a real-zero entry with un-canonicalized algebraic-*)
-  (* number bloat would otherwise be misclassified as nonzero, returning    *)
-  (* a finite (wrong) valuation and steering HNF pivot selection into a     *)
-  (* division-by-zero. After RootReduce, true zeros collapse and we early-  *)
-  (* return Infinity correctly.                                              *)
-  ft = schultzCanon[f];
+  (* `schultzCanon[…, x]` first: a real-zero entry with un-canonicalized     *)
+  (* algebraic-number bloat would otherwise be misclassified as nonzero,    *)
+  (* returning a finite (wrong) valuation and steering HNF pivot selection  *)
+  (* into a division-by-zero. The variable-aware canonicalizer keeps the    *)
+  (* polynomial structure in radical form so `trueDegreeAndLead` can read   *)
+  (* the true degree.                                                         *)
+  ft = schultzCanon[f, x];
   If[zeroQ[ft], Return[Infinity]];
   num = Numerator[ft]; den = Denominator[ft];
-  dN = If[PolynomialQ[num, x], Exponent[num, x], 0];
-  dD = If[PolynomialQ[den, x], Exponent[den, x], 0];
+  dN = First @ trueDegreeAndLead[num, x];
+  dD = First @ trueDegreeAndLead[den, x];
   dD - dN
 ];
 
@@ -223,16 +319,23 @@ valInfinity[f_, x_Symbol] := Module[{ft, num, den, dN, dD},
 (* at infinity" of f ∈ k(x) is c·x^k, with k = −v_∞(f). Used to pivot HNF.  *)
 
 ClearAll[leadingMonomialAtInfinity];
-leadingMonomialAtInfinity[f_, x_Symbol] := Module[{ft, k, coeff},
-  ft = schultzCanon[f];
+leadingMonomialAtInfinity[f_, x_Symbol] := Module[
+  {ft, num, den, dN, lN, dD, lD, k},
+  ft = schultzCanon[f, x];
   If[zeroQ[ft], Return[{0, -Infinity}]];
-  k = -valInfinity[ft, x];
-  (* Limit[ratio, x->Infinity] would compute the right value on entries     *)
-  (* whose leading coefficient is rational, but on algebraic-number entries  *)
-  (* it can return ComplexInfinity when the un-canonicalized leading term   *)
-  (* secretly equals 0. `schultzCanon` on the limit output catches this.    *)
-  coeff = schultzCanon[Limit[ft / x^k, x -> Infinity]];
-  {coeff, k}
+  num = Numerator[ft]; den = Denominator[ft];
+  (* Use trueDegreeAndLead rather than `Limit[ft / x^k, x -> Infinity]`:     *)
+  (* `Limit` evaluates the leading coefficient through Mathematica's        *)
+  (* simplification engine and returns 0 (or ComplexInfinity) on entries    *)
+  (* whose surface-form leading term is `Sqrt[3] + Root[…]`-style algebraic *)
+  (* zero. The numerator/denominator-coefficient route uses zeroQ +         *)
+  (* RootReduce per coefficient, so the actual nonzero leading is picked.   *)
+  {dN, lN} = trueDegreeAndLead[num, x];
+  {dD, lD} = trueDegreeAndLead[den, x];
+  k = dN - dD;
+  (* lN / lD are constants in x — the variable-aware canon collapses them   *)
+  (* through `RootReduce` to their compact algebraic form.                   *)
+  {schultzCanon[lN / lD, x], k}
 ];
 
 (* reduceAboveInfinityPivot[f, pivotK, x]: given f ∈ k(x) and a pivot        *)
@@ -245,7 +348,7 @@ ClearAll[reduceAboveInfinityPivot];
 reduceAboveInfinityPivot[f_, pivotK_Integer, x_Symbol] := Module[
   {ft, num, den, quot, rem, polyPart, fracPart, lowPart, highPart, deg, i, c,
    laurent, tTerm},
-  ft = schultzCanon[f];
+  ft = schultzCanon[f, x];
   If[zeroQ[ft], Return[{0, 0}]];
   num = Numerator[ft]; den = Denominator[ft];
   (* Split f = polyPart + fracPart where polyPart ∈ k[x] and fracPart has   *)
@@ -316,7 +419,7 @@ reduceAboveInfinityPivot[f_, pivotK_Integer, x_Symbol] := Module[
       ]
     ]
   ];
-  {schultzCanon[highPart], schultzCanon[lowPart / x^pivotK]}
+  {schultzCanon[highPart, x], schultzCanon[lowPart / x^pivotK, x]}
 ];
 
 (* ::Section:: *)
@@ -342,7 +445,7 @@ schultzHNFInfinity[mat_List, x_Symbol] := Module[
   (* the loop's `!zeroQ[M[[i, j]]]` test classifies an algebraically-zero  *)
   (* but expression-nonzero entry as nonzero, picks it as the largest     *)
   (* degree (= smallest v_∞), and divides by it.                            *)
-  M = Map[schultzCanon, mat, {2}];
+  M = Map[schultzCanon[#, x] &, mat, {2}];
   m = Length[M];
   n = If[m > 0, Length[First[M]], 0];
   Do[
@@ -370,16 +473,16 @@ schultzHNFInfinity[mat_List, x_Symbol] := Module[
           If[!zeroQ[M[[i, j]]],
             (* Quotient q = M[i,j] / pivot: the "floor" in k[[1/x]].         *)
             (* By pivot choice deg(M[i,j]) ≤ deg(pivot), so q ∈ k[[1/x]].    *)
-            q = schultzCanon[M[[i, j]] / pivot];
+            q = schultzCanon[M[[i, j]] / pivot, x];
             M[[i]] = M[[i]] - q * M[[j]];
-            M[[i]] = schultzCanon /@ M[[i]];
+            M[[i]] = Map[schultzCanon[#, x] &, M[[i]]];
           ],
           {i, j + 1, m}
         ];
 
         (* Step 3: normalise pivot to x^{pivotK}.                             *)
         If[!zeroQ[pivotCoeff - 1],
-          M[[j]] = schultzCanon /@ (M[[j]] / pivotCoeff);
+          M[[j]] = Map[schultzCanon[#, x] &, M[[j]] / pivotCoeff];
         ];
 
         (* Step 4: reduce above-pivot entries to have no monomials of        *)
@@ -395,7 +498,7 @@ schultzHNFInfinity[mat_List, x_Symbol] := Module[
                 If[!zeroQ[qAbove],
                   Do[
                     If[k =!= j,
-                      M[[i, k]] = schultzCanon[M[[i, k]] - qAbove * M[[j, k]]];
+                      M[[i, k]] = schultzCanon[M[[i, k]] - qAbove * M[[j, k]], x];
                     ],
                     {k, 1, n}
                   ]
@@ -483,12 +586,13 @@ schultzPrincipalDivisor[fAF_?afElementQ, basis_?basisDescriptorQ, y_Symbol] :=
     (*    (f·ψ_i)_{ψ_j} = (f·η_i)_{η_j} · x^{δ_j − δ_i} = Mf[j, i] · x^{δ_j − δ_i}.*)
     (* Row i, col j of aInf:                                                      *)
     aInfRows = Table[
-      schultzCanon[Mf[[j, i]] * basis["x"]^(deltas[[j]] - deltas[[i]])],
+      schultzCanon[Mf[[j, i]] * basis["x"]^(deltas[[j]] - deltas[[i]]),
+                   basis["x"]],
       {i, n}, {j, n}
     ];
 
     schultzDivisorMake[
-      Map[schultzCanon, aFinRows, {2}],
+      Map[schultzCanon[#, basis["x"]] &, aFinRows, {2}],
       aInfRows,
       basis
     ]
@@ -611,11 +715,11 @@ schultzDivisorMultiply[
     Table[
       Module[{psiIeta, psiJeta, psiIAF, psiJAF, prodAF, prodEta, rowOut},
         psiIeta = Table[
-          schultzCanon[d1["aInf"][[i, k]] / x^deltas[[k]]],
+          schultzCanon[d1["aInf"][[i, k]] / x^deltas[[k]], x],
           {k, n}
         ];
         psiJeta = Table[
-          schultzCanon[d2["aInf"][[j, k]] / x^deltas[[k]]],
+          schultzCanon[d2["aInf"][[j, k]] / x^deltas[[k]], x],
           {k, n}
         ];
         psiIAF = afMake[psiIeta, basis];
@@ -623,7 +727,7 @@ schultzDivisorMultiply[
         prodAF = afTimes[psiIAF, psiJAF, basis];
         prodEta = prodAF["Coeffs"];
         rowOut = Table[
-          schultzCanon[prodEta[[k]] * x^deltas[[k]]],
+          schultzCanon[prodEta[[k]] * x^deltas[[k]], x],
           {k, n}
         ];
         rowOut

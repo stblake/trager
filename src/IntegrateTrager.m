@@ -277,7 +277,14 @@ IntegrateTrager[integrand_, {x_Symbol, y_Symbol, relation_},
   (* autoModeIntegrate. Doing this BEFORE option validation keeps "Auto"     *)
   (* invisible to the per-method pipeline — every downstream branch sees a   *)
   (* concrete method name.                                                    *)
-  If[logMethodOpt === "Auto",
+  (*                                                                            *)
+  (* `Schultz -> True` is a hard route override: it bypasses the              *)
+  (* Trager/Miller/Kauers cascade entirely (Schultz supplies its own log-    *)
+  (* term construction) and runs the SchultzPipeline driver below. Auto      *)
+  (* mode is ignored when Schultz is requested. Without this guard the       *)
+  (* default `LogTermsMethod -> "Auto"` would dispatch first and the user's *)
+  (* `Schultz -> True` would silently never be honored.                       *)
+  If[logMethodOpt === "Auto" && !schultzOpt,
     Throw[autoModeIntegrate[integrand, {x, y, relation}, opts]]
   ];
 
